@@ -47,10 +47,14 @@ function getBrowserHeaders(): Record<string, string> {
     headers['Api-Key'] = apiKey;
   }
 
-  // Session cookie fallback
-  const sessionCookie = process.env.GMGN_SESSION_COOKIE;
-  if (sessionCookie) {
-    headers['Cookie'] = sessionCookie;
+  // Session cookie fallback — gabungin dengan __cf_bm kalo ada
+  const sessionCookie = process.env.GMGN_SESSION_COOKIE || '';
+  const cfBm = process.env.GMGN_CF_BM || '';
+  const cookieParts: string[] = [];
+  if (sessionCookie) cookieParts.push(sessionCookie);
+  if (cfBm) cookieParts.push(`__cf_bm=${cfBm}`);
+  if (cookieParts.length > 0) {
+    headers['Cookie'] = cookieParts.join('; ');
   }
 
   return headers;
@@ -371,10 +375,11 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
     releaseSlot();
   }
 
-  // Priority 2: REST API fallback (browser-like headers, mungkin kena 403/rate limit)
+  // Priority 2: REST API fallback (browser-like headers)
   const apiKey = process.env.GMGN_API_KEY;
   const sessionCookie = process.env.GMGN_SESSION_COOKIE;
-  if (!apiKey && !sessionCookie) {
+  const cfBm = process.env.GMGN_CF_BM;
+  if (!apiKey && !sessionCookie && !cfBm) {
     return { feeSol: null, source: 'no_api_key' };
   }
 
