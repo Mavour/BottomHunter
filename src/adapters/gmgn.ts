@@ -336,7 +336,38 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
   const cached = cacheGet<{ feeSol: number | null; source: string | null }>(cacheKey);
   if (cached !== null) return cached;
 
-  // Bypass kalo ga ada API key DAN ga ada session cookie
+  // Priority 1: ambil fee dari GMGN CLI (sama kaya getTokenInfo, dijamin work)
+  await acquireSlot();
+  try {
+    const raw = execGmgn(['token', 'info', '--chain', 'sol', '--address', mint, '--raw']);
+    const data = parseJson<{ data?: any }>(raw, 'token info');
+    const info = data?.data;
+    if (info) {
+      const feeInfo = extractFeeInfo(info);
+      if (feeInfo.feeSol != null) {
+        // Cek pools array juga
+        if (Array.isArray(info?.pools)) {
+          for (const pool of info.pools) {
+            const pf = extractFeeInfo(pool);
+            if (pf.feeSol != null) {
+              cacheSet(cacheKey, pf, 300_000);
+              releaseSlot();
+              return pf;
+            }
+          }
+        }
+        cacheSet(cacheKey, feeInfo, 300_000);
+        releaseSlot();
+        return feeInfo;
+      }
+    }
+  } catch {
+    // CLI gagal, lanjut ke REST API
+  } finally {
+    releaseSlot();
+  }
+
+  // Priority 2: REST API fallback (browser-like headers, mungkin kena 403/rate limit)
   const apiKey = process.env.GMGN_API_KEY;
   const sessionCookie = process.env.GMGN_SESSION_COOKIE;
   if (!apiKey && !sessionCookie) {
@@ -363,15 +394,11 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
       }
       const json: any = await res.json();
       const info = json?.data ?? json;
-
-      // Cari fee fields
       let feeInfo = extractFeeInfo(info);
       if (feeInfo.feeSol != null) {
         result = feeInfo;
         break;
       }
-
-      // Cek pools array
       if (Array.isArray(info?.pools)) {
         for (const pool of info.pools) {
           feeInfo = extractFeeInfo(pool);
@@ -381,7 +408,6 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
           }
         }
       }
-
       if (result.feeSol != null) break;
       result = { feeSol: null, source: 'not_found' };
     } catch {
