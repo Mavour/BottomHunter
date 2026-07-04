@@ -155,6 +155,8 @@ export class Alerter {
     }
 
     try {
+      // Delete any lingering webhook so polling mode works
+      await this.bot.telegram.deleteWebhook({ drop_pending_updates: true });
       await this.bot.launch();
       console.log('[ALERT] ✅ Bot started and listening for commands');
     } catch (err) {
@@ -190,12 +192,7 @@ export class Alerter {
   }
 
   async sendTestMessage(): Promise<boolean> {
-    const msg = '🧪 *Test Message*\n\nBot is running correctly!';
-
-    if (!this.sendEnabled) {
-      console.log('[ALERT] Dry-run — test message NOT sent');
-      return true;
-    }
+    const msg = '🟢 *Bot Restarted*\n\nBot is running and scanning for signals!';
 
     if (!this.bot) {
       console.error('[ALERT] Bot not initialized');
@@ -204,9 +201,10 @@ export class Alerter {
 
     try {
       await this.bot.telegram.sendMessage(this.chatId, msg, { parse_mode: 'Markdown' });
+      console.log('[ALERT] ✅ Startup notification sent');
       return true;
     } catch (err) {
-      console.error('[ALERT] Test message failed:', err);
+      console.error('[ALERT] Startup notification failed:', err);
       return false;
     }
   }

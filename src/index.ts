@@ -89,18 +89,14 @@ async function main(): Promise<void> {
   // Start bot to listen for commands
   await alerter.startBot();
 
-  // Send test message
-  if (config.telegramSendEnabled) {
-    console.log('[MAIN] Sending test Telegram message...');
-    const testOk = await alerter.sendTestMessage();
-    if (!testOk) {
-      console.error('[MAIN] ❌ Telegram test failed — check BOT_TOKEN and CHAT_ID');
-      process.exit(1);
-    }
-    console.log('[MAIN] ✅ Telegram OK');
-  } else {
-    console.log('[MAIN] Telegram: DRY-RUN (TELEGRAM_SEND_ENABLED=false)');
+  // Send startup notification
+  console.log('[MAIN] Sending startup notification...');
+  const startOk = await alerter.sendTestMessage();
+  if (!startOk) {
+    console.error('[MAIN] ❌ Startup notification failed — check BOT_TOKEN and CHAT_ID');
+    process.exit(1);
   }
+  console.log('[MAIN] ✅ Startup notification sent');
 
   // Register shutdown handlers
   process.on('SIGINT', () => shutdown('SIGINT'));
