@@ -213,8 +213,8 @@ export async function getTrending(minCreatedHours = 3, limit = 100): Promise<Gmg
       '--filter', 'frozen',
       '--raw',
     ]);
-    const data = parseJson<{ data?: GmgnTrending[] }>(raw, 'trending');
-    return data.data ?? [];
+    const data = parseJson<{ data?: { rank?: GmgnTrending[] } }>(raw, 'trending');
+    return data.data?.rank ?? [];
   } catch {
     return [];
   } finally {
