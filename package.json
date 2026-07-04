@@ -1,0 +1,29 @@
+{
+  "name": "scanner-dip",
+  "version": "1.1.0",
+  "description": "GMGN-only Solana SuperTrend + EMA alert bot — scans smart money signals and trending tokens, sends Telegram alerts on bullish bounce (SuperTrend OR EMA support zone)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "dev:dry": "TELEGRAM_SEND_ENABLED=false ts-node src/index.ts",
+    "test": "jest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": ["solana", "gmgn", "supertrend", "ema", "telegram", "alert", "meme-coin"],
+  "license": "MIT",
+  "dependencies": {
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
