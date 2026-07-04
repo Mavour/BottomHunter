@@ -72,7 +72,7 @@ export class Alerter {
   constructor(botToken: string, chatId: string, sendEnabled: boolean) {
     this.chatId = chatId;
     this.sendEnabled = sendEnabled;
-    if (sendEnabled && botToken) {
+    if (botToken) {
       this.bot = new Telegraf(botToken);
       this.setupCommands();
     }
@@ -150,7 +150,7 @@ export class Alerter {
 
   async startBot(): Promise<void> {
     if (!this.bot) {
-      console.error('[ALERT] Bot not initialized');
+      console.error('[ALERT] Bot not initialized — check TELEGRAM_BOT_TOKEN');
       return;
     }
 
