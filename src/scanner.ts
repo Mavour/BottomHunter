@@ -194,6 +194,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         if (cfg.filters.rug_check.renounced_mint && !security.renounced_mint) continue;
         if (cfg.filters.rug_check.renounced_freeze_account && !security.renounced_freeze_account) continue;
         if (security.top_10_holder_rate > cfg.filters.top_10_holder_rate_max) continue;
+        if (cfg.filters.min_fee_sol > 0 && security.buy_tax < cfg.filters.min_fee_sol && security.sell_tax < cfg.filters.min_fee_sol) continue;
       }
 
       // Synthesize a GmgnTrending-like object for multi-TF check
@@ -328,6 +329,14 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
     }
 
     const enriched = result.value as EnrichedToken;
+
+    // Fee/tax check dari security data
+    if (enriched.security && cfg.filters.min_fee_sol > 0) {
+      if (enriched.security.buy_tax < cfg.filters.min_fee_sol && enriched.security.sell_tax < cfg.filters.min_fee_sol) {
+        console.log(`[SCAN] ${trendingToken.symbol} fee check failed: buy_tax ${enriched.security.buy_tax}% sell_tax ${enriched.security.sell_tax}% < min ${cfg.filters.min_fee_sol}%`);
+        continue;
+      }
+    }
 
     try {
       const check = await checkIndicatorsMultiTF(trendingToken.address, {

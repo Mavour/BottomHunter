@@ -51,7 +51,7 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
     `│ 📈 Vol 24h: *$${fmtNum(signal.volume24h)}*`,
     `│ 💧 Liquidity: *$${fmtNum(signal.liquidity)}*`,
     `│ 👥 Holders: *${signal.holders.toLocaleString()}*`,
-    `│ ⛽ Fee: *${signal.feeSol.toFixed(2)} SOL*`,
+    `│ 💸 Tax: *${signal.feeSol.toFixed(1)}%*`,
     `╰──────────────────────────────────────╯`,
     ``,
     `🔗 *Links:*`,

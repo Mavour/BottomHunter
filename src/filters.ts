@@ -58,11 +58,7 @@ export function filterTrending(
     return { passed: false, reason: `holders ${t.holder_count} < min ${cfg.min_holders}` };
   }
 
-  // Fee check (using rug_ratio as proxy for fee SOL)
-  const feeSol = t.rug_ratio ?? 0;
-  if (feeSol < cfg.min_fee_sol) {
-    return { passed: false, reason: `fee ${feeSol.toFixed(2)} SOL < min ${cfg.min_fee_sol} SOL` };
-  }
+  // Fee/tax check dari security data (buy_tax/sell_tax) dilakukan di enrichment phase
 
   // Boolean flags
   if (cfg.require_not_wash_trading && t.is_wash_trading) {
@@ -107,12 +103,11 @@ export function buildAlertFromTrending(
   const currentPrice = info?.price?.price ?? t.price;
   const athPrice = info?.ath_price ?? 0;
 
-  // Calculate fee ratio for display (fee SOL / mcap)
-  // Using rug_ratio as proxy for fee data when available
-  const feeSol = security?.rug_ratio ?? 0;
+  const buyTax = security?.buy_tax ?? 0;
+  const sellTax = security?.sell_tax ?? 0;
   const mcap = t.market_cap || 0;
   const feeRatioLabel = mcap > 0
-    ? `${feeSol.toFixed(2)} SOL / $${(mcap / 1000).toFixed(0)}K mcap`
+    ? `Buy ${buyTax}% / Sell ${sellTax}%`
     : 'N/A';
 
   return {
@@ -158,7 +153,7 @@ export function buildAlertFromTrending(
       triggered: emaTriggered ?? false,
     },
     // Fee info
-    feeSol,
+    feeSol: buyTax,
     feeRatioLabel,
     // Timeframe
     timeframe: '5m',  // default, will be overridden by scanner
