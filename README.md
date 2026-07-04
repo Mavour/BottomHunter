@@ -1,8 +1,8 @@
 # scanner-dip
 
-GMGN-only Solana SuperTrend alert bot. Scans smart money signals and trending tokens, calculates 5m SuperTrend + StochRSI, sends Telegram alerts when technical conditions confirm a bullish bounce.
+GMGN Solana SuperTrend + EMA alert bot. Scans smart money signals and trending tokens, calculates SuperTrend or EMA support zone + StochRSI, sends Telegram alerts when technical conditions confirm a bullish bounce.
 
-**Alert-only — no auto-buy.** All data from GMGN CLI. No Helius, no Birdeye, no DexScreener.
+**Alert-only — no auto-buy.** Data from GMGN API.
 
 ---
 
@@ -10,16 +10,17 @@ GMGN-only Solana SuperTrend alert bot. Scans smart money signals and trending to
 
 ```
 Every 60s:
-  1. Fetch smart money buy signals (gmgn-cli market signal --signal-type 12)
-     → fast path: if SuperTrend green + StochRSI cross → alert immediately
+  1. Fetch smart money buy signals
+     → fast path: if (SuperTrend green OR EMA support) + StochRSI cross → alert immediately
 
-  2. Fetch trending tokens (gmgn-cli market trending --interval 24h)
+  2. Fetch trending tokens
      → slow path: apply filters → check indicators → alert if valid
 ```
 
-**Signal trigger (both paths):**
-- SuperTrend (10, 3) direction = bullish AND close > ST line (reclaimed)
-- StochRSI (14, 14, 3, 3): %K crosses above %D on last candle, %K < 80 (not overbought)
+**Signal trigger (both paths) — OR logic:**
+- **Path A — SuperTrend:** SuperTrend (10, 3) direction = bullish AND close > ST line (reclaimed)
+- **Path B — EMA Support:** Price near/below EMA 25/50/100/200 (support zone)
+- **StochRSI (14, 14, 3, 3):** %K crosses above %D on last candle, %K < 80 (not overbought)
 - All configured filter thresholds pass
 
 ---
@@ -27,8 +28,9 @@ Every 60s:
 ## Setup
 
 ```bash
-# 1. Clone / navigate to project
-cd scanner-dip
+# 1. Clone
+git clone https://github.com/Mavour/BottomHunter.git
+cd BottomHunter
 
 # 2. Install dependencies
 npm install
@@ -47,10 +49,10 @@ cp .env.example .env
 # Edit filters.config.json — all values are configurable
 
 # 7. Dry-run test (no Telegram messages sent)
-TELEGRAM_SEND_ENABLED=false npm run dev
+npm run dev:dry
 
 # 8. Start for real
-TELEGRAM_SEND_ENABLED=true npm run dev
+npm run dev
 ```
 
 ---
@@ -61,23 +63,22 @@ TELEGRAM_SEND_ENABLED=true npm run dev
 
 All thresholds are **configurable**. Token passes only when ALL configured thresholds pass.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `rug_check.renounced_mint` | bool | Require mint authority renounced |
-| `rug_check.renounced_freeze_account` | bool | Require freeze authority renounced |
-| `top_10_holder_rate_max` | % | Max concentration in top 10 holders |
-| `dev_team_hold_rate_max` | % | Max dev team hold |
-| `suspected_insider_hold_rate_max` | % | Max suspected insider hold |
-| `rat_trader_amount_rate_max` | % | Max entrapment rate |
-| `bundler_trader_amount_rate_max` | % | Max bundler rate |
-| `smart_degen_count_min` | count | Min smart degen wallets |
-| `bot_degen_count_max` | count | Max bot/degen wallets |
-| `sniper_count_max` | count | Max sniper wallets |
-| `vol24h_min` | USD | Min 24h volume |
-| `mcap_min` / `mcap_max` | USD | Market cap range |
-| `vs_ath_pct_max` | % | Max distance from ATH |
-| `require_not_wash_trading` | bool | Reject wash-traded tokens |
-| `require_has_social` | bool | Require at least one social link |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rug_check.renounced_mint` | bool | `true` | Require mint authority renounced |
+| `rug_check.renounced_freeze_account` | bool | `true` | Require freeze authority renounced |
+| `top_10_holder_rate_max` | % | `60` | Max concentration in top 10 holders |
+| `vol24h_min` | USD | `500000` | Min 24h volume |
+| `mcap_min` | USD | `350000` | Min market cap |
+| `mcap_max` | USD | `0` | Max market cap (0 = no limit) |
+| `min_liquidity_usd` | USD | `5000` | Min liquidity |
+| `min_holders` | count | `0` | Min holder count |
+| `min_fee_sol` | SOL | `30` | Min fee in SOL |
+| `vs_ath_pct_max` | % | `95` | Max distance from ATH |
+| `min_token_age_hours` | hours | `6` | Min token age |
+| `require_not_wash_trading` | bool | `false` | Reject wash-traded tokens |
+| `require_has_social` | bool | `false` | Require at least one social link |
+| `require_not_honeypot` | bool | `false` | Reject honeypot tokens |
 
 ### Environment variables
 
@@ -109,6 +110,15 @@ value = direction === bullish ? lower : upper
 
 **Bullish signal:** `direction === bullish` AND `close > value` (price reclaims ST line)
 
+### EMA Support Zone (25, 50, 100, 200)
+
+```
+EMA = Previous EMA + (Close - Previous EMA) × Multiplier
+Multiplier = 2 / (Period + 1)
+```
+
+**Bullish signal:** Price within 2% of any EMA level (25, 50, 100, 200) or below it
+
 ### Stochastic RSI (14, 14, 3, 3)
 
 ```
@@ -127,10 +137,11 @@ Overbought gate: %K < 80
 
 ```
 src/
-├── adapters/gmgn.ts       # gmgn-cli wrapper (all API calls)
+├── adapters/gmgn.ts       # GMGN API wrapper
 ├── indicators/
-│   ├── supertrend.ts      # SuperTrend (10,3) — meridian reference impl
-│   └── stochrsi.ts        # StochRSI (14,14,3,3) — proper %K/%D
+│   ├── supertrend.ts      # SuperTrend (10,3)
+│   ├── ema.ts             # EMA 25/50/100/200 support zone
+│   └── stochrsi.ts        # StochRSI (14,14,3,3)
 ├── filters.ts             # Filter engine + alert builder
 ├── scanner.ts             # Scan loop: signal fast path → trending slow path
 ├── alerter.ts             # Telegram formatter + sender
@@ -144,22 +155,19 @@ src/
 ## Telegram Alert Format
 
 ```
-🔔 SIGNAL — $MOODENG
+SUPPORT AREA - $MOODENG
+SuperTrend BULLISH - Price reclaimed ST line
+StochRSI: %K 52.34 crossed above %D 48.12
+
 CA: 7nCq...L4Sd
 
 mcap $2.34M · vol24h $892.12K · liq $187.45K · holders 4821
 Δ5m +3.21% · Δ1h +8.45% · vsATH -12.34%
 
-Safety:
-rug yes · top10 42% · dev 3% · insider 8% · bundler 12% · entramp 5%
-sniper 89 · bot-degen 12 · smart-degen 4 · renowned 2
-renounced mint/freeze: yes/yes · wash: no · social: yes
+Fee: 35.00 SOL / $350K mcap
 
-5m SuperTrend: 🟢 BULLISH
-Price: $0.001234 above ST line $0.001198
-StochRSI: %K 52.34 crossed above %D 48.12 (not overbought)
-
-Chart: https://gmgn.ai/sol/token/7nCq...L4Sd
+link: https://dexscreener.com/solana/7nCq...L4Sd
+GMGN: https://gmgn.ai/sol/token/7nCq...L4Sd
 ```
 
 ---
