@@ -87,6 +87,7 @@ async function main(): Promise<void> {
   alerter = new Alerter(config.telegramBotToken, config.telegramChatId, config.telegramSendEnabled, config.pollIntervalMs);
 
   // Start bot to listen for commands
+  alerter.onScanRequest(() => runScan(config, alerter));
   await alerter.startBot();
 
   // Send startup notification

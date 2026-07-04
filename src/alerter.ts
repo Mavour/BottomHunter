@@ -69,6 +69,7 @@ export class Alerter {
   private chatId: string;
   private sendEnabled: boolean;
   private pollIntervalMs: number;
+  private scanHandler: (() => Promise<void>) | null = null;
 
   constructor(botToken: string, chatId: string, sendEnabled: boolean, pollIntervalMs = 60000) {
     this.chatId = chatId;
@@ -82,6 +83,10 @@ export class Alerter {
 
   setPollInterval(ms: number): void {
     this.pollIntervalMs = ms;
+  }
+
+  onScanRequest(handler: () => Promise<void>): void {
+    this.scanHandler = handler;
   }
 
   private setupCommands(): void {
@@ -104,6 +109,7 @@ export class Alerter {
         `*Commands:*`,
         `/start — Tampilkan pesan ini`,
         `/status — Cek status bot`,
+        `/screening — Jalankan scan manual`,
         `/help — Bantuan`,
       ].join('\n');
 
@@ -122,6 +128,21 @@ export class Alerter {
       ].join('\n');
 
       ctx.reply(msg, { parse_mode: 'Markdown' });
+    });
+
+    // /screening command — trigger immediate scan
+    this.bot.command('screening', async (ctx) => {
+      if (!this.scanHandler) {
+        await ctx.reply('❌ Scan handler not available');
+        return;
+      }
+      await ctx.reply('🔍 *Manual scan triggered...*', { parse_mode: 'Markdown' });
+      try {
+        await this.scanHandler();
+        await ctx.reply('✅ *Scan complete*', { parse_mode: 'Markdown' });
+      } catch (err) {
+        await ctx.reply(`❌ *Scan error:* ${err}`, { parse_mode: 'Markdown' });
+      }
     });
 
     // /help command
