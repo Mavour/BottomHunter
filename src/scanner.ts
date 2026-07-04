@@ -328,19 +328,23 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
 
     seenMints.add(mintKey);
 
-    // Fee check (cuma 1-5 pool, aman dari rate limit)
+    // Fee check — skip kalo 403/401 (mungkin rate limit), proceed tanpa fee
     let tokenFeeSol: number | undefined;
     if (cfg.filters.min_fee_sol > 0) {
       const feeResult = await getTokenFeesSol(trending.address);
       if (feeResult.feeSol == null) {
-        console.log(`[SCAN] ${symbol} fee unavailable (${feeResult.source}), skipping`);
-        continue;
-      }
-      if (feeResult.feeSol < cfg.filters.min_fee_sol) {
+        if (feeResult.source?.startsWith('http_')) {
+          console.log(`[SCAN] ${symbol} fee ${feeResult.source}, proceed tanpa fee`);
+        } else {
+          console.log(`[SCAN] ${symbol} fee unavailable (${feeResult.source}), skipping`);
+          continue;
+        }
+      } else if (feeResult.feeSol < cfg.filters.min_fee_sol) {
         console.log(`[SCAN] ${symbol} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
         continue;
+      } else {
+        tokenFeeSol = feeResult.feeSol;
       }
-      tokenFeeSol = feeResult.feeSol;
     }
 
     // Enrich

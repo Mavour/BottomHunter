@@ -336,32 +336,36 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
   const cached = cacheGet<{ feeSol: number | null; source: string | null }>(cacheKey);
   if (cached !== null) return cached;
 
-  // Priority 1: ambil fee dari GMGN CLI (sama kaya getTokenInfo, dijamin work)
+  // Priority 1: ambil fee dari GMGN CLI (sama kaya getTokenInfo)
   await acquireSlot();
   try {
     const raw = execGmgn(['token', 'info', '--chain', 'sol', '--address', mint, '--raw']);
     const data = parseJson<{ data?: any }>(raw, 'token info');
     const info = data?.data;
     if (info) {
+      // Debug: log available keys untuk 1 token pertama
+      if (process.env.DEBUG_FEE) {
+        console.log(`[FEE] CLI keys for ${mint.slice(0,8)}:`, Object.keys(info).join(','));
+      }
       const feeInfo = extractFeeInfo(info);
       if (feeInfo.feeSol != null) {
-        // Cek pools array juga
-        if (Array.isArray(info?.pools)) {
-          for (const pool of info.pools) {
-            const pf = extractFeeInfo(pool);
-            if (pf.feeSol != null) {
-              cacheSet(cacheKey, pf, 300_000);
-              releaseSlot();
-              return pf;
-            }
-          }
-        }
         cacheSet(cacheKey, feeInfo, 300_000);
         releaseSlot();
         return feeInfo;
       }
+      // Cek pools array
+      if (Array.isArray(info?.pools)) {
+        for (const pool of info.pools) {
+          const pf = extractFeeInfo(pool);
+          if (pf.feeSol != null) {
+            cacheSet(cacheKey, pf, 300_000);
+            releaseSlot();
+            return pf;
+          }
+        }
+      }
     }
-  } catch {
+  } catch (e) {
     // CLI gagal, lanjut ke REST API
   } finally {
     releaseSlot();
