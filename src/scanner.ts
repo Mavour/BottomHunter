@@ -5,6 +5,7 @@ import {
   getMarketKline,
   getTokenInfo,
   getTokenSecurity,
+  getTokenFeesSol,
   setConcurrencyLimit,
   RateLimitError,
 } from './adapters/gmgn';
@@ -97,7 +98,8 @@ const TIMEFRAMES = ['5m', '15m', '1h', '4h'];
 async function checkIndicatorsMultiTF(
   mint: string,
   trendingData: { symbol: string; trending: GmgnTrending; info: GmgnTokenInfo | null; security: GmgnTokenSecurity | null; priceChange5m: number; priceChange1h: number; vsAthPct: number },
-  cfg: AppConfig
+  cfg: AppConfig,
+  feeSol?: number
 ): Promise<IndicatorCheck> {
   // Try each timeframe until one passes
   for (const tf of TIMEFRAMES) {
@@ -146,7 +148,8 @@ async function checkIndicatorsMultiTF(
       trendingData.priceChange1h,
       'trending',
       ema,
-      emaValid
+      emaValid,
+      feeSol
     );
 
     alertSignal.timeframe = tf;
@@ -194,7 +197,21 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         if (cfg.filters.rug_check.renounced_mint && !security.renounced_mint) continue;
         if (cfg.filters.rug_check.renounced_freeze_account && !security.renounced_freeze_account) continue;
         if (security.top_10_holder_rate > cfg.filters.top_10_holder_rate_max) continue;
-        if (cfg.filters.min_fee_sol > 0 && security.buy_tax < cfg.filters.min_fee_sol && security.sell_tax < cfg.filters.min_fee_sol) continue;
+      }
+
+      // Fee check dari GMGN API (pool_fees_sol)
+      let tokenFeeSol: number | undefined;
+      if (cfg.filters.min_fee_sol > 0) {
+        const feeResult = await getTokenFeesSol(mint);
+        if (feeResult.feeSol == null) {
+          console.log(`[SCAN] ${mint.slice(0, 8)} fee unavailable (${feeResult.source}), skipping`);
+          continue;
+        }
+        if (feeResult.feeSol < cfg.filters.min_fee_sol) {
+          console.log(`[SCAN] ${mint.slice(0, 8)} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
+          continue;
+        }
+        tokenFeeSol = feeResult.feeSol;
       }
 
       // Synthesize a GmgnTrending-like object for multi-TF check
@@ -242,7 +259,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         priceChange5m,
         priceChange1h,
         vsAthPct,
-      }, cfg);
+      }, cfg, tokenFeeSol);
       if (!check.passed) continue;
 
       setCooldown(mint, cfg.scan.cooldownMinutes);
@@ -330,12 +347,19 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
 
     const enriched = result.value as EnrichedToken;
 
-    // Fee/tax check dari security data
-    if (enriched.security && cfg.filters.min_fee_sol > 0) {
-      if (enriched.security.buy_tax < cfg.filters.min_fee_sol && enriched.security.sell_tax < cfg.filters.min_fee_sol) {
-        console.log(`[SCAN] ${trendingToken.symbol} fee check failed: buy_tax ${enriched.security.buy_tax}% sell_tax ${enriched.security.sell_tax}% < min ${cfg.filters.min_fee_sol}%`);
+    // Fee check dari GMGN API (pool_fees_sol)
+    let tokenFeeSol: number | undefined;
+    if (cfg.filters.min_fee_sol > 0) {
+      const feeResult = await getTokenFeesSol(trendingToken.address);
+      if (feeResult.feeSol == null) {
+        console.log(`[SCAN] ${trendingToken.symbol} fee unavailable (${feeResult.source}), skipping`);
         continue;
       }
+      if (feeResult.feeSol < cfg.filters.min_fee_sol) {
+        console.log(`[SCAN] ${trendingToken.symbol} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
+        continue;
+      }
+      tokenFeeSol = feeResult.feeSol;
     }
 
     try {
@@ -347,7 +371,7 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
           priceChange5m: enriched.priceChange5m,
           priceChange1h: enriched.priceChange1h,
           vsAthPct: enriched.vsAthPct,
-        }, cfg);
+        }, cfg, tokenFeeSol);
       if (!check.passed) {
         console.log(`[SCAN] ${trendingToken.symbol} indicator check: ${check.reason}`);
         continue;

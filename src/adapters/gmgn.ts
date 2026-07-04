@@ -1,6 +1,8 @@
 import { execFileSync } from 'child_process';
 import { GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, GmgnTrending, GmgnSignal } from '../types';
 
+const GMGN_API_BASE = 'https://openapi.gmgn.ai';
+
 // ─── CLI exec helper ────────────────────────────────────────────────────────
 
 const CLI_TIMEOUT_MS = 30_000;
@@ -219,6 +221,56 @@ export async function getTrending(minCreatedHours = 3, limit = 100): Promise<Gmg
     return [];
   } finally {
     releaseSlot();
+  }
+}
+
+// ─── Direct GMGN API — Token fee in SOL ───────────────────────────────────
+
+/**
+ * Fetch token fee in SOL langsung dari GMGN REST API.
+ * Mengikuti pola dari bravonoid: cari pool_fees_sol di pool data,
+ * fallback ke total_fees_sol di token level.
+ * 
+ * GMGN API: GET /v1/token/info?chain=sol&address=<mint>
+ * Requires GMGN_API_KEY env var.
+ */
+export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | null; source: string | null }> {
+  const apiKey = process.env.GMGN_API_KEY;
+  if (!apiKey) {
+    return { feeSol: null, source: 'no_api_key' };
+  }
+
+  try {
+    const res = await fetch(`${GMGN_API_BASE}/v1/token/info?chain=sol&address=${mint}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { feeSol: null, source: `http_${res.status}` };
+
+    const json: any = await res.json();
+    const info = json?.data ?? json;
+
+    // Cari fee fields — priority: pool_fees_sol > total_fees_sol > fee_sol
+    const poolFee = info?.pool_fees_sol ?? info?.poolFeesSol ?? null;
+    if (poolFee != null) return { feeSol: Number(poolFee), source: 'pool' };
+
+    const totalFee = info?.total_fees_sol ?? info?.totalFeesSol ?? info?.total_fee ?? info?.totalFee ?? null;
+    if (totalFee != null) return { feeSol: Number(totalFee), source: 'total' };
+
+    const genericFee = info?.fees_sol ?? info?.feesSol ?? info?.fee_sol ?? info?.feeSol ?? null;
+    if (genericFee != null) return { feeSol: Number(genericFee), source: 'generic' };
+
+    // Cek di dalam pools array jika ada
+    if (Array.isArray(info?.pools)) {
+      for (const pool of info.pools) {
+        const pf = pool?.pool_fees_sol ?? pool?.poolFeesSol ?? null;
+        if (pf != null) return { feeSol: Number(pf), source: 'pool' };
+      }
+    }
+
+    return { feeSol: null, source: 'not_found' };
+  } catch {
+    return { feeSol: null, source: 'fetch_failed' };
   }
 }
 

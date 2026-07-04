@@ -98,16 +98,16 @@ export function buildAlertFromTrending(
   priceChange1h: number,
   source: 'signal' | 'trending',
   ema?: { ema25: number; ema50: number; ema100: number; ema200: number; nearEmaLevel: { period: number; value: number } | null; supportZone: boolean },
-  emaTriggered?: boolean
+  emaTriggered?: boolean,
+  feeSol?: number
 ): AlertSignal {
   const currentPrice = info?.price?.price ?? t.price;
   const athPrice = info?.ath_price ?? 0;
 
-  const buyTax = security?.buy_tax ?? 0;
-  const sellTax = security?.sell_tax ?? 0;
+  const fee = feeSol ?? 0;
   const mcap = t.market_cap || 0;
   const feeRatioLabel = mcap > 0
-    ? `Buy ${buyTax}% / Sell ${sellTax}%`
+    ? `${fee.toFixed(2)} SOL / $${(mcap / 1000).toFixed(0)}K mcap`
     : 'N/A';
 
   return {
@@ -153,7 +153,7 @@ export function buildAlertFromTrending(
       triggered: emaTriggered ?? false,
     },
     // Fee info
-    feeSol: buyTax,
+    feeSol: fee,
     feeRatioLabel,
     // Timeframe
     timeframe: '5m',  // default, will be overridden by scanner
