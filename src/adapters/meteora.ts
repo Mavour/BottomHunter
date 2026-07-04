@@ -55,16 +55,17 @@ function condense(p: RawPool): MeteoraPool {
 }
 
 /**
- * Cari pool dari Meteora dengan filter mcap >= minMcap.
+ * Cari pool dari Meteora dengan filter mcap range.
  * Server-side filtering, jadi cuma return pool yang memenuhi.
  */
-export async function discoverPools(minMcap: number, pageSize = 10): Promise<MeteoraPool[]> {
+export async function discoverPools(minMcap: number, maxMcap = 100_000_000, pageSize = 10): Promise<MeteoraPool[]> {
   const filters = [
     'base_token_has_critical_warnings=false',
     'quote_token_has_critical_warnings=false',
     'base_token_has_high_single_ownership=false',
     'pool_type=dlmm',
     `base_token_market_cap>=${minMcap}`,
+    `base_token_market_cap<=${maxMcap}`,
     'base_token_organic_score>=60',
     'quote_token_organic_score>=60',
   ].join('&&');

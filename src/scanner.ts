@@ -282,7 +282,8 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
 async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>): Promise<void> {
   console.log(`[SCAN] Fetching Meteora pools (mcap >= ${cfg.filters.mcap_min})...`);
 
-  const pools = await discoverPools(cfg.filters.mcap_min, 10);
+  const maxMcap = cfg.filters.mcap_max > 0 ? cfg.filters.mcap_max : 100_000_000;
+  const pools = await discoverPools(cfg.filters.mcap_min, maxMcap, 10);
   console.log(`[SCAN] Meteora returned ${pools.length} pools`);
 
   for (const pool of pools) {
