@@ -104,7 +104,11 @@ async function main(): Promise<void> {
 
   // Run first scan immediately
   console.log('[MAIN] Running initial scan...');
-  await runScan(config, alerter);
+  try {
+    await runScan(config, alerter);
+  } catch (err) {
+    console.error('[MAIN] Initial scan error:', err);
+  }
 
   // Schedule periodic scans
   pollTimer = setInterval(async () => {

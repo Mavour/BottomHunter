@@ -101,7 +101,13 @@ async function checkIndicatorsMultiTF(
 ): Promise<IndicatorCheck> {
   // Try each timeframe until one passes
   for (const tf of TIMEFRAMES) {
-    const klines = await getMarketKline(mint, tf, 200);
+    let klines: GmgnKline[];
+    try {
+      klines = await getMarketKline(mint, tf, 200);
+    } catch {
+      console.log(`[SCAN] ${trendingData.symbol} failed to fetch ${tf} klines, skipping`);
+      continue;
+    }
     if (klines.length < 15) continue;
 
     // StochRSI - required for both paths
@@ -244,6 +250,8 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
       if (err instanceof RateLimitError) {
         console.log(`[SCAN] Rate limited, waiting ${Math.round(err.waitMs / 1000)}s...`);
         await new Promise((r) => setTimeout(r, err.waitMs));
+      } else {
+        console.error(`[SCAN] Error processing signal ${mint.slice(0, 8)}:`, err);
       }
     }
   }
@@ -321,22 +329,26 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
 
     const enriched = result.value as EnrichedToken;
 
-    const check = await checkIndicatorsMultiTF(trendingToken.address, {
-        symbol: trendingToken.symbol,
-        trending: trendingToken,
-        info: enriched.info,
-        security: enriched.security,
-        priceChange5m: enriched.priceChange5m,
-        priceChange1h: enriched.priceChange1h,
-        vsAthPct: enriched.vsAthPct,
-      }, cfg);
-    if (!check.passed) {
-      console.log(`[SCAN] ${trendingToken.symbol} indicator check: ${check.reason}`);
-      continue;
-    }
+    try {
+      const check = await checkIndicatorsMultiTF(trendingToken.address, {
+          symbol: trendingToken.symbol,
+          trending: trendingToken,
+          info: enriched.info,
+          security: enriched.security,
+          priceChange5m: enriched.priceChange5m,
+          priceChange1h: enriched.priceChange1h,
+          vsAthPct: enriched.vsAthPct,
+        }, cfg);
+      if (!check.passed) {
+        console.log(`[SCAN] ${trendingToken.symbol} indicator check: ${check.reason}`);
+        continue;
+      }
 
-    setCooldown(trendingToken.address, cfg.scan.cooldownMinutes);
-    await alerter.sendAlert(check.signal, 'trending');
+      setCooldown(trendingToken.address, cfg.scan.cooldownMinutes);
+      await alerter.sendAlert(check.signal, 'trending');
+    } catch (err) {
+      console.error(`[SCAN] Error checking ${trendingToken.symbol}:`, err);
+    }
   }
 }
 
