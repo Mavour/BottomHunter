@@ -48,11 +48,71 @@ cp .env.example .env
 # 6. Edit filter thresholds
 # Edit filters.config.json — all values are configurable
 
-# 7. Dry-run test (no Telegram messages sent)
+# 7. Build TypeScript
+npm run build
+
+# 8. Dry-run test (no Telegram messages sent)
 npm run dev:dry
 
-# 8. Start for real
+# 9. Start for real
 npm run dev
+```
+
+---
+
+## VPS Deployment (PM2)
+
+### Install PM2 globally
+```bash
+npm install -g pm2
+```
+
+### Build & Start
+```bash
+# Build TypeScript
+npm run build
+
+# Start with PM2
+pm2 start ecosystem.config.js
+
+# Save PM2 process list (auto-start on reboot)
+pm2 save
+
+# Generate startup script
+pm2 startup
+```
+
+### PM2 Commands
+```bash
+# Check status
+pm2 status
+
+# View logs
+pm2 logs scanner-dip
+
+# Monitor resources
+pm2 monit
+
+# Restart
+pm2 restart scanner-dip
+
+# Stop
+pm2 stop scanner-dip
+
+# Delete
+pm2 delete scanner-dip
+```
+
+### Auto-restart on VPS reboot
+```bash
+pm2 startup
+# Follow the command it shows you, then:
+pm2 save
+```
+
+### View logs in real-time
+```bash
+pm2 logs scanner-dip --lines 100
 ```
 
 ---
