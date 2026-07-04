@@ -3,6 +3,7 @@ module.exports = {
     {
       name: 'scanner-dip',
       script: 'dist/index.js',
+      exec_mode: 'fork',
       instances: 1,
       autorestart: true,
       watch: false,
