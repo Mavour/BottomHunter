@@ -40,32 +40,6 @@ export function filterTrending(
   if (t.top_10_holder_rate > cfg.top_10_holder_rate_max) {
     return { passed: false, reason: `top10 ${t.top_10_holder_rate}% > max ${cfg.top_10_holder_rate_max}%` };
   }
-  if (t.dev_team_hold_rate > cfg.dev_team_hold_rate_max) {
-    return { passed: false, reason: `dev ${t.dev_team_hold_rate}% > max ${cfg.dev_team_hold_rate_max}%` };
-  }
-  if (t.suspected_insider_hold_rate > cfg.suspected_insider_hold_rate_max) {
-    return { passed: false, reason: `insider ${t.suspected_insider_hold_rate}% > max ${cfg.suspected_insider_hold_rate_max}%` };
-  }
-  if (t.rat_trader_amount_rate > cfg.rat_trader_amount_rate_max) {
-    return { passed: false, reason: `entrapment ${t.rat_trader_amount_rate}% > max ${cfg.rat_trader_amount_rate_max}%` };
-  }
-  if (t.bundler_trader_amount_rate > cfg.bundler_trader_amount_rate_max) {
-    return { passed: false, reason: `bundler ${t.bundler_trader_amount_rate}% > max ${cfg.bundler_trader_amount_rate_max}%` };
-  }
-
-  // Wallet counts
-  if (t.sniper_count > cfg.sniper_count_max) {
-    return { passed: false, reason: `sniper ${t.sniper_count} > max ${cfg.sniper_count_max}` };
-  }
-  if (t.bot_degen_count > cfg.bot_degen_count_max) {
-    return { passed: false, reason: `bot_degen ${t.bot_degen_count} > max ${cfg.bot_degen_count_max}` };
-  }
-  if (t.smart_degen_count < cfg.smart_degen_count_min) {
-    return { passed: false, reason: `smart_degen ${t.smart_degen_count} < min ${cfg.smart_degen_count_min}` };
-  }
-  if (t.renowned_count < cfg.renowned_count_min) {
-    return { passed: false, reason: `renowned ${t.renowned_count} < min ${cfg.renowned_count_min}` };
-  }
 
   // Market
   if (t.volume_24h < cfg.vol24h_min) {
@@ -82,6 +56,12 @@ export function filterTrending(
   }
   if (t.holder_count < cfg.min_holders) {
     return { passed: false, reason: `holders ${t.holder_count} < min ${cfg.min_holders}` };
+  }
+
+  // Fee check (using rug_ratio as proxy for fee SOL)
+  const feeSol = t.rug_ratio ?? 0;
+  if (feeSol < cfg.min_fee_sol) {
+    return { passed: false, reason: `fee ${feeSol.toFixed(2)} SOL < min ${cfg.min_fee_sol} SOL` };
   }
 
   // Boolean flags
@@ -149,14 +129,6 @@ export function buildAlertFromTrending(
     // Safety
     rug: t.rug_ratio > 0,
     top10HolderRate: t.top_10_holder_rate,
-    devTeamHoldRate: t.dev_team_hold_rate,
-    insiderRate: t.suspected_insider_hold_rate,
-    bundlerRate: t.bundler_trader_amount_rate,
-    entrampmentRate: t.rat_trader_amount_rate,
-    sniperCount: t.sniper_count,
-    botDegenCount: t.bot_degen_count,
-    smartDegenCount: t.smart_degen_count,
-    renownedCount: t.renowned_count,
     renouncedMint: t.renounced_mint,
     renouncedFreeze: t.renounced_freeze_account,
     isWashTrading: t.is_wash_trading,

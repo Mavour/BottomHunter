@@ -196,8 +196,6 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         if (cfg.filters.rug_check.renounced_mint && !security.renounced_mint) continue;
         if (cfg.filters.rug_check.renounced_freeze_account && !security.renounced_freeze_account) continue;
         if (security.top_10_holder_rate > cfg.filters.top_10_holder_rate_max) continue;
-        if (security.dev_team_hold_rate > cfg.filters.dev_team_hold_rate_max) continue;
-        if (security.suspected_insider_hold_rate > cfg.filters.suspected_insider_hold_rate_max) continue;
       }
 
       const st = calculateSuperTrend(klines, cfg.supertrend.period, cfg.supertrend.multiplier);

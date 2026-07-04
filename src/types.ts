@@ -130,21 +130,14 @@ export interface FilterConfig {
   };
   // Concentration limits (%)
   top_10_holder_rate_max: number;
-  dev_team_hold_rate_max: number;
-  suspected_insider_hold_rate_max: number;
-  rat_trader_amount_rate_max: number;     // entrapment
-  bundler_trader_amount_rate_max: number;
-  // Wallet counts
-  sniper_count_max: number;
-  bot_degen_count_max: number;
-  smart_degen_count_min: number;
-  renowned_count_min: number;
   // Market
   vol24h_min: number;
   mcap_min: number;
   mcap_max: number;
   min_liquidity_usd: number;
   min_holders: number;
+  // Fee
+  min_fee_sol: number;
   // ATH
   vs_ath_pct_min: number;
   vs_ath_pct_max: number;
@@ -199,14 +192,6 @@ export interface AlertSignal {
   // Safety
   rug: boolean;
   top10HolderRate: number;
-  devTeamHoldRate: number;
-  insiderRate: number;
-  bundlerRate: number;
-  entrampmentRate: number;
-  sniperCount: number;
-  botDegenCount: number;
-  smartDegenCount: number;
-  renownedCount: number;
   renouncedMint: boolean;
   renouncedFreeze: boolean;
   isWashTrading: boolean;
@@ -222,7 +207,7 @@ export interface AlertSignal {
     ema200: number;
     nearEmaLevel: { period: number; value: number } | null;
     supportZone: boolean;
-    triggered: boolean;  // true if EMA signal triggered (alternative to SuperTrend)
+    triggered: boolean;
   };
   // Fee info (for display only)
   feeSol: number;
