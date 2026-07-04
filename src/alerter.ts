@@ -25,32 +25,43 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
   const triggeredBy = signal.ema.triggered ? 'EMA' : 'SuperTrend';
 
   // Build the alert title based on trigger
-  let title = '';
-  if (signal.ema.triggered && signal.ema.nearEmaLevel) {
-    title = `SUPPORT AREA - $${signal.symbol}`;
-  } else {
-    title = `SUPPORT AREA - $${signal.symbol}`;
-  }
+  let title = `🟢 *SUPPORT AREA* — *$${signal.symbol}*`;
 
   // Build indicator status line
-  const indicatorLine = signal.ema.triggered
-    ? `ST Near Support - EMA ${signal.ema.nearEmaLevel?.period ?? 'N/A'} at $${signal.ema.nearEmaLevel?.value?.toFixed(6) ?? 'N/A'}`
-    : `SuperTrend BULLISH - Price reclaimed ST line`;
+  let indicatorLine = '';
+  if (signal.ema.triggered && signal.ema.nearEmaLevel) {
+    indicatorLine = `📍 EMA ${signal.ema.nearEmaLevel.period} Support — *$${signal.ema.nearEmaLevel.value.toFixed(6)}*`;
+  } else {
+    indicatorLine = `📍 SuperTrend BULLISH — Price reclaimed ST line`;
+  }
+
+  const stochStatus = signal.stochrsi.crossedAbove ? '✅ Cross' : '⏳ Pending';
 
   const lines = [
     title,
+    ``,
     indicatorLine,
-    `StochRSI: %K ${signal.stochrsi.k.toFixed(2)} crossed above %D ${signal.stochrsi.d.toFixed(2)}`,
+    `📊 StochRSI ${stochStatus} — %K *${signal.stochrsi.k.toFixed(1)}* > %D ${signal.stochrsi.d.toFixed(1)}`,
     ``,
-    `CA: ${signal.mint}`,
+    `╭────────── 📋 *TOKEN INFO* ──────────╮`,
+    `│ CA: \`${signal.mint}\``,
+    `│ 💰 MCap: *$${fmtNum(signal.marketCap)}*`,
+    `│ 📈 Vol 24h: *$${fmtNum(signal.volume24h)}*`,
+    `│ 💧 Liquidity: *$${fmtNum(signal.liquidity)}*`,
+    `│ 👥 Holders: *${signal.holders.toLocaleString()}*`,
+    `╰──────────────────────────────────────╯`,
     ``,
-    `mcap $${fmtNum(signal.marketCap)} · vol24h $${fmtNum(signal.volume24h)} · liq $${fmtNum(signal.liquidity)} · holders ${signal.holders}`,
-    `Δ5m ${fmtPct(signal.priceChange5m)} · Δ1h ${fmtPct(signal.priceChange1h)} · vsATH ${fmtPct(-signal.vsAthPct)}`,
+    `╭────────── 📊 *PRICE STATS* ─────────╮`,
+    `│ ⏱ 5m: ${fmtPct(signal.priceChange5m)}`,
+    `│ 🕐 1h: ${fmtPct(signal.priceChange1h)}`,
+    `│ 📉 vsATH: ${fmtPct(-signal.vsAthPct)}`,
+    `╰──────────────────────────────────────╯`,
     ``,
-    `Fee: ${signal.feeRatioLabel}`,
+    `⛽ *Fee:* ${signal.feeRatioLabel}`,
     ``,
-    `link: ${signal.dexScreenerUrl}`,
-    `GMGN: ${signal.chartUrl}`,
+    `🔗 *Links:*`,
+    `   → [DexScreener](${signal.dexScreenerUrl})`,
+    `   → [GMGN](${signal.chartUrl})`,
   ];
 
   return lines.join('\n');
