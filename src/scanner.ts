@@ -1,7 +1,6 @@
 import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource } from './types';
 import {
   getSignalBuys,
-  getTrending,
   getMarketKline,
   getTokenInfo,
   getTokenSecurity,
@@ -9,10 +8,11 @@ import {
   setConcurrencyLimit,
   RateLimitError,
 } from './adapters/gmgn';
+import { discoverPools } from './adapters/meteora';
 import { calculateSuperTrend, validateSuperTrendSignal } from './indicators/supertrend';
 import { calculateStochRSI, validateStochRSISignal } from './indicators/stochrsi';
 import { calculateAllEMAs, validateEMASignal } from './indicators/ema';
-import { filterTrending, checkTokenAge, buildAlertFromTrending } from './filters';
+import { checkTokenAge, buildAlertFromTrending } from './filters';
 import { Alerter } from './alerter';
 
 // ─── Price change from klines ───────────────────────────────────────────────
@@ -277,103 +277,90 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
   }
 }
 
-// ─── Process trending stream (slow path) ────────────────────────────────────
+// ─── Process pools from Meteora (server-side filtered by mcap) ─────────────
 
-async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>): Promise<void> {
-  console.log('[SCAN] Fetching trending tokens...');
+async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>): Promise<void> {
+  console.log(`[SCAN] Fetching Meteora pools (mcap >= ${cfg.filters.mcap_min})...`);
 
-  let trending: GmgnTrending[];
-  try {
-    trending = await getTrending(cfg.scan.minAgeHours, 100);
-  } catch (err) {
-    if (err instanceof RateLimitError) {
-      console.log(`[SCAN] Rate limited, waiting ${Math.round(err.waitMs / 1000)}s...`);
-      await new Promise((r) => setTimeout(r, err.waitMs));
-    }
-    console.error('[SCAN] Failed to fetch trending:', err);
-    return;
-  }
+  const pools = await discoverPools(cfg.filters.mcap_min, 10);
+  console.log(`[SCAN] Meteora returned ${pools.length} pools`);
 
-  console.log(`[SCAN] Got ${trending.length} trending tokens`);
-
-  // Add all seen mints to cooldown map to prevent re-processing
-  for (const t of trending) {
-    if (isOnCooldown(t.address)) {
-      seenMints.add(t.address.toLowerCase());
-    }
-  }
-
-  // Filter + age check + enrich concurrently
-  const candidates: GmgnTrending[] = [];
-  for (const t of trending) {
-    const mintKey = t.address.toLowerCase();
+  for (const pool of pools) {
+    const mintKey = pool.base.mint.toLowerCase();
     if (seenMints.has(mintKey)) continue;
     if (isOnCooldown(mintKey)) continue;
 
-    const age = checkTokenAge(t.open_timestamp, cfg.scan.minAgeHours);
-    if (!age.ok) {
-      console.log(`[SCAN] ${t.symbol} age check failed: ${age.reason}`);
-      continue;
-    }
+    const symbol = pool.base.symbol || mintKey.slice(0, 8);
 
-    const filterResult = filterTrending(t, cfg.filters);
-    if (!filterResult.passed) {
-      console.log(`[SCAN] ${t.symbol} filter failed: ${filterResult.reason}`);
-      continue;
-    }
+    // Build synthetic GmgnTrending
+    const trending: GmgnTrending = {
+      address: pool.base.mint,
+      symbol,
+      name: pool.name,
+      price: pool.price,
+      price_change_5m: 0,
+      price_change_1h: pool.price_change_pct,
+      price_change_24h: 0,
+      market_cap: pool.mcap,
+      liquidity: pool.active_tvl,
+      volume_24h: pool.volume_window,
+      swaps: 0,
+      holder_count: pool.holders,
+      top_10_holder_rate: 0,
+      dev_team_hold_rate: 0,
+      suspected_insider_hold_rate: 0,
+      rat_trader_amount_rate: 0,
+      bundler_trader_amount_rate: 0,
+      smart_degen_count: 0,
+      bot_degen_count: 0,
+      renowned_count: 0,
+      sniper_count: 0,
+      renounced_mint: true,
+      renounced_freeze_account: true,
+      is_wash_trading: false,
+      open_timestamp: 0,
+      created_timestamp: 0,
+      is_honeypot: false,
+      has_at_least_one_social: false,
+      rug_ratio: 0,
+    };
 
     seenMints.add(mintKey);
-    candidates.push(t);
-  }
 
-  console.log(`[SCAN] ${candidates.length} candidates after filters`);
-
-  // Fee check dulu sebelum enrichment — hindari API calls sia-sia
-  const feePassed: { token: GmgnTrending; feeSol: number }[] = [];
-  for (const t of candidates) {
+    // Fee check (cuma 1-5 pool, aman dari rate limit)
+    let tokenFeeSol: number | undefined;
     if (cfg.filters.min_fee_sol > 0) {
-      const feeResult = await getTokenFeesSol(t.address);
+      const feeResult = await getTokenFeesSol(trending.address);
       if (feeResult.feeSol == null) {
-        console.log(`[SCAN] ${t.symbol} fee unavailable (${feeResult.source}), skipping`);
+        console.log(`[SCAN] ${symbol} fee unavailable (${feeResult.source}), skipping`);
         continue;
       }
       if (feeResult.feeSol < cfg.filters.min_fee_sol) {
-        console.log(`[SCAN] ${t.symbol} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
+        console.log(`[SCAN] ${symbol} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
         continue;
       }
-      feePassed.push({ token: t, feeSol: feeResult.feeSol });
-    } else {
-      feePassed.push({ token: t, feeSol: 0 });
+      tokenFeeSol = feeResult.feeSol;
     }
-  }
 
-  console.log(`[SCAN] ${feePassed.length} candidates after fee filter`);
+    // Enrich
+    const enriched = await enrichToken(trending).catch((err) => {
+      console.error(`[SCAN] Failed to enrich ${symbol}: ${err}`);
+      return null;
+    });
+    if (!enriched) continue;
 
-  // Enrich hanya token yang lolos fee
-  const enrichedResults = await Promise.allSettled(
-    feePassed.map((fp) => enrichToken(fp.token))
-  );
-
-  for (let i = 0; i < enrichedResults.length; i++) {
-    const result = enrichedResults[i];
-    const { token: trendingToken, feeSol: tokenFeeSol } = feePassed[i];
-
-    if (result.status === 'rejected') {
-      const err = result.reason;
-      if (err instanceof RateLimitError) {
-        console.log(`[SCAN] Rate limited, waiting ${Math.round(err.waitMs / 1000)}s...`);
-        await new Promise((r) => setTimeout(r, err.waitMs));
-      }
-      console.error(`[SCAN] Failed to enrich ${trendingToken.symbol}: ${err}`);
+    // Age check
+    const age = checkTokenAge(enriched.info?.open_timestamp ?? 0, cfg.scan.minAgeHours);
+    if (!age.ok) {
+      console.log(`[SCAN] ${symbol} age check failed: ${age.reason}`);
       continue;
     }
 
-    const enriched = result.value as EnrichedToken;
-
+    // Multi-TF indicator check
     try {
-      const check = await checkIndicatorsMultiTF(trendingToken.address, {
-          symbol: trendingToken.symbol,
-          trending: trendingToken,
+      const check = await checkIndicatorsMultiTF(trending.address, {
+          symbol,
+          trending,
           info: enriched.info,
           security: enriched.security,
           priceChange5m: enriched.priceChange5m,
@@ -381,14 +368,14 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
           vsAthPct: enriched.vsAthPct,
         }, cfg, tokenFeeSol);
       if (!check.passed) {
-        console.log(`[SCAN] ${trendingToken.symbol} indicator check: ${check.reason}`);
+        console.log(`[SCAN] ${symbol} indicator check: ${check.reason}`);
         continue;
       }
 
-      setCooldown(trendingToken.address, cfg.scan.cooldownMinutes);
+      setCooldown(trending.address, cfg.scan.cooldownMinutes);
       await alerter.sendAlert(check.signal, 'trending');
     } catch (err) {
-      console.error(`[SCAN] Error checking ${trendingToken.symbol}:`, err);
+      console.error(`[SCAN] Error checking ${symbol}:`, err);
     }
   }
 }
@@ -404,8 +391,8 @@ export async function runScan(cfg: AppConfig, alerter: Alerter): Promise<void> {
   // Fast path: smart money signals first
   await processSignalStream(cfg, alerter);
 
-  // Slow path: trending scan
-  await processTrendingStream(cfg, alerter, seenMints);
+  // Meteora path: server-side mcap filter, cuma dapet pool berkualitas
+  await processMeteoraPools(cfg, alerter, seenMints);
 
   console.log('[SCAN] === Scan cycle complete ===');
 }
