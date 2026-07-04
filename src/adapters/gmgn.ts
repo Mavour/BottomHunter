@@ -2,7 +2,59 @@ import { execFileSync } from 'child_process';
 import { GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, GmgnTrending, GmgnSignal } from '../types';
 import { cacheGet, cacheSet } from '../cache';
 
-const GMGN_API_BASE = 'https://openapi.gmgn.ai';
+const GMGN_API_BASE = 'https://gmgn.ai';
+const GMGN_OPENAPI_BASE = 'https://openapi.gmgn.ai';
+
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+];
+
+function getRandomUserAgent(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+/** Browser-like headers + GMGN API key dalam semua format umum (solana-degen-bot pattern) */
+function getBrowserHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': getRandomUserAgent(),
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+    'Referer': 'https://gmgn.ai/?chain=sol',
+    'Origin': 'https://gmgn.ai',
+    'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Pragma': 'no-cache',
+    'Cache-Control': 'no-cache',
+  };
+
+  // Coba semua format header API key (shotgun approach)
+  const apiKey = process.env.GMGN_API_KEY;
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+    headers['x-route-key'] = apiKey;
+    headers['X-API-Key'] = apiKey;
+    headers['x-api-key'] = apiKey;
+    headers['API-Key'] = apiKey;
+    headers['api-key'] = apiKey;
+    headers['Api-Key'] = apiKey;
+  }
+
+  // Session cookie fallback
+  const sessionCookie = process.env.GMGN_SESSION_COOKIE;
+  if (sessionCookie) {
+    headers['Cookie'] = sessionCookie;
+  }
+
+  return headers;
+}
 
 // ─── Resolution helpers ───────────────────────────────────────────────────
 
@@ -284,58 +336,76 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
   const cached = cacheGet<{ feeSol: number | null; source: string | null }>(cacheKey);
   if (cached !== null) return cached;
 
+  // Bypass kalo ga ada API key DAN ga ada session cookie
   const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
+  const sessionCookie = process.env.GMGN_SESSION_COOKIE;
+  if (!apiKey && !sessionCookie) {
     return { feeSol: null, source: 'no_api_key' };
   }
 
   let result: { feeSol: number | null; source: string | null } = { feeSol: null, source: 'unknown' };
+  const headers = getBrowserHeaders();
+  const urls = [
+    `${GMGN_API_BASE}/api/v1/token_info/sol/${mint}`,
+    `${GMGN_OPENAPI_BASE}/v1/token/info?chain=sol&address=${mint}`,
+    `${GMGN_API_BASE}/defi/quotation/v1/token_info/sol/${mint}`,
+  ];
 
-  try {
-    const res = await fetch(`${GMGN_API_BASE}/v1/token/info?chain=sol&address=${mint}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      result = { feeSol: null, source: `http_${res.status}` };
-    } else {
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        result = { feeSol: null, source: `http_${res.status}` };
+        continue;
+      }
       const json: any = await res.json();
       const info = json?.data ?? json;
 
-      const poolFee = info?.pool_fees_sol ?? info?.poolFeesSol ?? null;
-      if (poolFee != null) {
-        result = { feeSol: Number(poolFee), source: 'pool' };
-      } else {
-        const totalFee = info?.total_fees_sol ?? info?.totalFeesSol ?? info?.total_fee ?? info?.totalFee ?? null;
-        if (totalFee != null) {
-          result = { feeSol: Number(totalFee), source: 'total' };
-        } else {
-          const genericFee = info?.fees_sol ?? info?.feesSol ?? info?.fee_sol ?? info?.feeSol ?? null;
-          if (genericFee != null) {
-            result = { feeSol: Number(genericFee), source: 'generic' };
-          } else if (Array.isArray(info?.pools)) {
-            let found = false;
-            for (const pool of info.pools) {
-              const pf = pool?.pool_fees_sol ?? pool?.poolFeesSol ?? null;
-              if (pf != null) {
-                result = { feeSol: Number(pf), source: 'pool' };
-                found = true;
-                break;
-              }
-            }
-            if (!found) result = { feeSol: null, source: 'not_found' };
-          } else {
-            result = { feeSol: null, source: 'not_found' };
+      // Cari fee fields
+      let feeInfo = extractFeeInfo(info);
+      if (feeInfo.feeSol != null) {
+        result = feeInfo;
+        break;
+      }
+
+      // Cek pools array
+      if (Array.isArray(info?.pools)) {
+        for (const pool of info.pools) {
+          feeInfo = extractFeeInfo(pool);
+          if (feeInfo.feeSol != null) {
+            result = feeInfo;
+            break;
           }
         }
       }
+
+      if (result.feeSol != null) break;
+      result = { feeSol: null, source: 'not_found' };
+    } catch {
+      result = { feeSol: null, source: 'fetch_failed' };
+      continue;
     }
-  } catch {
-    result = { feeSol: null, source: 'fetch_failed' };
   }
 
-  cacheSet(cacheKey, result, 300_000); // cache 5 menit
+  cacheSet(cacheKey, result, 300_000);
   return result;
+}
+
+/** Extract fee SOL dari response object (pool atau token level) */
+function extractFeeInfo(info: any): { feeSol: number | null; source: string | null } {
+  const poolFee = info?.pool_fees_sol ?? info?.poolFeesSol ?? null;
+  if (poolFee != null) return { feeSol: Number(poolFee), source: 'pool' };
+
+  const totalFee = info?.total_fees_sol ?? info?.totalFeesSol ?? info?.total_fee ?? info?.totalFee ?? null;
+  if (totalFee != null) return { feeSol: Number(totalFee), source: 'total' };
+
+  const genericFee = info?.fees_sol ?? info?.feesSol ?? info?.fee_sol ?? info?.feeSol ?? null;
+  if (genericFee != null) return { feeSol: Number(genericFee), source: 'generic' };
+
+  return { feeSol: null, source: 'not_found' };
 }
 
 export { RateLimitError };
