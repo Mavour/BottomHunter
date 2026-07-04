@@ -94,15 +94,14 @@ interface IndicatorCheck {
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h'];
 
-function checkIndicatorsMultiTF(enriched: EnrichedToken, cfg: AppConfig): IndicatorCheck {
-  const { trending, info, security, priceChange5m, priceChange1h, vsAthPct } = enriched;
-
+async function checkIndicatorsMultiTF(
+  mint: string,
+  trendingData: { symbol: string; trending: GmgnTrending; info: GmgnTokenInfo | null; security: GmgnTokenSecurity | null; priceChange5m: number; priceChange1h: number; vsAthPct: number },
+  cfg: AppConfig
+): Promise<IndicatorCheck> {
   // Try each timeframe until one passes
   for (const tf of TIMEFRAMES) {
-    // Fetch klines for this timeframe
-    const klines = enriched.klines; // We'll use the pre-fetched 5m for now
-    // In a real implementation, you'd fetch klines for each timeframe
-
+    const klines = await getMarketKline(mint, tf, 200);
     if (klines.length < 15) continue;
 
     // StochRSI - required for both paths
@@ -128,23 +127,22 @@ function checkIndicatorsMultiTF(enriched: EnrichedToken, cfg: AppConfig): Indica
     if (!stValid && !emaValid) continue;
 
     const triggeredBy = stValid ? 'SuperTrend' : 'EMA';
-    console.log(`[SCAN] ${trending.symbol} Signal triggered on ${tf} by: ${triggeredBy}`);
+    console.log(`[SCAN] ${trendingData.symbol} Signal triggered on ${tf} by: ${triggeredBy}`);
 
     // Build alert signal
     const alertSignal = buildAlertFromTrending(
-      trending,
-      info,
-      security,
+      trendingData.trending,
+      trendingData.info,
+      trendingData.security,
       st,
       sr,
-      priceChange5m,
-      priceChange1h,
+      trendingData.priceChange5m,
+      trendingData.priceChange1h,
       'trending',
       ema,
       emaValid
     );
 
-    // Set timeframe
     alertSignal.timeframe = tf;
 
     return { signal: alertSignal, passed: true, reason: `Indicator conditions met on ${tf} (${triggeredBy})`, timeframe: tf };
@@ -192,20 +190,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         if (security.top_10_holder_rate > cfg.filters.top_10_holder_rate_max) continue;
       }
 
-      const st = calculateSuperTrend(klines, cfg.supertrend.period, cfg.supertrend.multiplier);
-      const stValid = validateSuperTrendSignal(st);
-
-      const sr = calculateStochRSI(klines, cfg.stochrsi.period, cfg.stochrsi.kPeriod, cfg.stochrsi.dPeriod, cfg.stochrsi.smoothK);
-      if (!validateStochRSISignal(sr)) continue;
-
-      // EMA check (alternative to SuperTrend)
-      const ema = calculateAllEMAs(klines);
-      const emaValid = validateEMASignal(ema);
-
-      // OR logic: SuperTrend OR EMA must trigger
-      if (!stValid && !emaValid) continue;
-
-      // Synthesize a GmgnTrending-like object for buildAlertFromTrending
+      // Synthesize a GmgnTrending-like object for multi-TF check
       const syntheticTrending: GmgnTrending = {
         address: mint,
         symbol: info?.symbol ?? mint.slice(0, 8),
@@ -242,10 +227,19 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         ? (1 - info.price.price / info.ath_price) * 100
         : 0;
 
-      const alertSignal = buildAlertFromTrending(syntheticTrending, info, security, st, sr, priceChange5m, priceChange1h, 'signal', ema, emaValid);
+      const check = await checkIndicatorsMultiTF(mint, {
+        symbol: syntheticTrending.symbol,
+        trending: syntheticTrending,
+        info,
+        security,
+        priceChange5m,
+        priceChange1h,
+        vsAthPct,
+      }, cfg);
+      if (!check.passed) continue;
 
       setCooldown(mint, cfg.scan.cooldownMinutes);
-      await alerter.sendAlert(alertSignal, 'signal');
+      await alerter.sendAlert(check.signal, 'signal');
     } catch (err) {
       if (err instanceof RateLimitError) {
         console.log(`[SCAN] Rate limited, waiting ${Math.round(err.waitMs / 1000)}s...`);
@@ -327,7 +321,15 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
 
     const enriched = result.value as EnrichedToken;
 
-    const check = checkIndicatorsMultiTF(enriched, cfg);
+    const check = await checkIndicatorsMultiTF(trendingToken.address, {
+        symbol: trendingToken.symbol,
+        trending: trendingToken,
+        info: enriched.info,
+        security: enriched.security,
+        priceChange5m: enriched.priceChange5m,
+        priceChange1h: enriched.priceChange1h,
+        vsAthPct: enriched.vsAthPct,
+      }, cfg);
     if (!check.passed) {
       console.log(`[SCAN] ${trendingToken.symbol} indicator check: ${check.reason}`);
       continue;
