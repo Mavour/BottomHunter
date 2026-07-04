@@ -13,12 +13,13 @@ export interface MeteoraPool {
   holders: number;
   price: number;
   price_change_pct: number;
+  token_age_hours: number | null;
 }
 
 interface RawPool {
   pool_address: string;
   name: string;
-  token_x: { symbol: string; address: string; organic_score?: number; warnings?: string[]; market_cap?: number };
+  token_x: { symbol: string; address: string; organic_score?: number; warnings?: string[]; market_cap?: number; created_at?: number };
   token_y: { symbol: string; address: string };
   pool_type: string;
   dlmm_params?: { bin_step?: number };
@@ -51,6 +52,9 @@ function condense(p: RawPool): MeteoraPool {
     holders: p.base_token_holders ?? 0,
     price: p.pool_price ?? 0,
     price_change_pct: p.pool_price_change_pct ?? 0,
+    token_age_hours: p.token_x?.created_at
+      ? Math.floor((Date.now() - p.token_x.created_at) / 3_600_000)
+      : null,
   };
 }
 

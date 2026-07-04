@@ -293,45 +293,16 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
 
     const symbol = pool.base.symbol || mintKey.slice(0, 8);
 
-    // Build synthetic GmgnTrending
-    const trending: GmgnTrending = {
-      address: pool.base.mint,
-      symbol,
-      name: pool.name,
-      price: pool.price,
-      price_change_5m: 0,
-      price_change_1h: pool.price_change_pct,
-      price_change_24h: 0,
-      market_cap: pool.mcap,
-      liquidity: pool.active_tvl,
-      volume_24h: pool.volume_window,
-      swaps: 0,
-      holder_count: pool.holders,
-      top_10_holder_rate: 0,
-      dev_team_hold_rate: 0,
-      suspected_insider_hold_rate: 0,
-      rat_trader_amount_rate: 0,
-      bundler_trader_amount_rate: 0,
-      smart_degen_count: 0,
-      bot_degen_count: 0,
-      renowned_count: 0,
-      sniper_count: 0,
-      renounced_mint: true,
-      renounced_freeze_account: true,
-      is_wash_trading: false,
-      open_timestamp: 0,
-      created_timestamp: 0,
-      is_honeypot: false,
-      has_at_least_one_social: false,
-      rug_ratio: 0,
-    };
+    // Age check pake data Meteora (created_at), bukan GMGN
+    if (pool.token_age_hours != null && pool.token_age_hours < cfg.scan.minAgeHours) {
+      console.log(`[SCAN] ${symbol} age ${pool.token_age_hours}h < min ${cfg.scan.minAgeHours}h`);
+      continue;
+    }
 
-    seenMints.add(mintKey);
-
-    // Fee check — skip kalo 403/401 (mungkin rate limit), proceed tanpa fee
+    // Fee check — skip kalo 403, proceed tanpa fee
     let tokenFeeSol: number | undefined;
     if (cfg.filters.min_fee_sol > 0) {
-      const feeResult = await getTokenFeesSol(trending.address);
+      const feeResult = await getTokenFeesSol(pool.base.mint);
       if (feeResult.feeSol == null) {
         if (feeResult.source?.startsWith('http_')) {
           console.log(`[SCAN] ${symbol} fee ${feeResult.source}, proceed tanpa fee`);
@@ -347,41 +318,61 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
       }
     }
 
-    // Enrich
-    const enriched = await enrichToken(trending).catch((err) => {
-      console.error(`[SCAN] Failed to enrich ${symbol}: ${err}`);
-      return null;
-    });
-    if (!enriched) continue;
+    // Build synthetic GmgnTrending
+    const trending: GmgnTrending = {
+      address: pool.base.mint, symbol, name: pool.name,
+      price: pool.price, price_change_5m: 0, price_change_1h: pool.price_change_pct, price_change_24h: 0,
+      market_cap: pool.mcap, liquidity: pool.active_tvl, volume_24h: pool.volume_window,
+      swaps: 0, holder_count: pool.holders,
+      top_10_holder_rate: 0, dev_team_hold_rate: 0,
+      suspected_insider_hold_rate: 0, rat_trader_amount_rate: 0, bundler_trader_amount_rate: 0,
+      smart_degen_count: 0, bot_degen_count: 0, renowned_count: 0, sniper_count: 0,
+      renounced_mint: true, renounced_freeze_account: true,
+      is_wash_trading: false, is_honeypot: false, has_at_least_one_social: false,
+      open_timestamp: 0, created_timestamp: 0, rug_ratio: 0,
+    };
 
-    // Age check
-    const age = checkTokenAge(enriched.info?.open_timestamp ?? 0, cfg.scan.minAgeHours);
-    if (!age.ok) {
-      console.log(`[SCAN] ${symbol} age check failed: ${age.reason}`);
-      continue;
-    }
+    seenMints.add(mintKey);
 
-    // Multi-TF indicator check
+    // Coba enrich GMGN — kalo gagal (403) proceed dengan Meteora data aja
+    let info: GmgnTokenInfo | null = null;
+    let security: GmgnTokenSecurity | null = null;
+    let klines: GmgnKline[] = [];
     try {
-      const check = await checkIndicatorsMultiTF(trending.address, {
-          symbol,
-          trending,
-          info: enriched.info,
-          security: enriched.security,
-          priceChange5m: enriched.priceChange5m,
-          priceChange1h: enriched.priceChange1h,
-          vsAthPct: enriched.vsAthPct,
-        }, cfg, tokenFeeSol);
-      if (!check.passed) {
-        console.log(`[SCAN] ${symbol} indicator check: ${check.reason}`);
-        continue;
-      }
-
-      setCooldown(trending.address, cfg.scan.cooldownMinutes);
-      await alerter.sendAlert(check.signal, 'trending');
-    } catch (err) {
-      console.error(`[SCAN] Error checking ${symbol}:`, err);
+      const enriched = await enrichToken(trending);
+      info = enriched.info;
+      security = enriched.security;
+      klines = enriched.klines;
+    } catch {
+      console.log(`[SCAN] ${symbol} GMGN enrichment failed, proceed with Meteora data only`);
     }
+
+    // Indicator check (kalo klines tersedia)
+    if (klines.length >= 15) {
+      const priceChange5m = calcPriceChange(klines, 5);
+      const priceChange1h = calcPriceChange(klines, 60);
+      const vsAthPct = info?.ath_price && info?.price?.price
+        ? (1 - info.price.price / info.ath_price) * 100 : 0;
+
+      try {
+        const check = await checkIndicatorsMultiTF(pool.base.mint, {
+            symbol, trending, info, security,
+            priceChange5m, priceChange1h, vsAthPct,
+          }, cfg, tokenFeeSol);
+        if (!check.passed) {
+          console.log(`[SCAN] ${symbol} indicator check: ${check.reason}`);
+          continue;
+        }
+        setCooldown(trending.address, cfg.scan.cooldownMinutes);
+        await alerter.sendAlert(check.signal, 'trending');
+        continue;
+      } catch (err) {
+        console.error(`[SCAN] Error checking ${symbol}:`, err);
+      }
+    }
+
+    // Fallback: alert tanpa indicator data
+    console.log(`[SCAN] ${symbol} no klines, skipping`);
   }
 }
 
