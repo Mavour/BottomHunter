@@ -160,6 +160,8 @@ export function buildAlertFromTrending(
     // Fee info
     feeSol,
     feeRatioLabel,
+    // Timeframe
+    timeframe: '5m',  // default, will be overridden by scanner
     // Meta
     source,
     chartUrl: `https://gmgn.ai/sol/token/${t.address}`,

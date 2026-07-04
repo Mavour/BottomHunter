@@ -83,80 +83,74 @@ async function enrichToken(trending: GmgnTrending): Promise<EnrichedToken> {
   return { trending, info, security, klines, priceChange5m, priceChange1h, vsAthPct };
 }
 
-// ─── Check indicators on enriched token ─────────────────────────────────────
+// ─── Check indicators on enriched token (multi-timeframe) ────────────────────
 
 interface IndicatorCheck {
   signal: AlertSignal;
   passed: boolean;
   reason: string;
+  timeframe: string;
 }
 
-function checkIndicators(enriched: EnrichedToken, cfg: AppConfig): IndicatorCheck {
-  const { trending, klines, info, security, priceChange5m, priceChange1h, vsAthPct } = enriched;
+const TIMEFRAMES = ['5m', '15m', '1h', '4h'];
 
-  if (klines.length < 15) {
-    return { signal: null as unknown as AlertSignal, passed: false, reason: 'Insufficient kline data' };
+function checkIndicatorsMultiTF(enriched: EnrichedToken, cfg: AppConfig): IndicatorCheck {
+  const { trending, info, security, priceChange5m, priceChange1h, vsAthPct } = enriched;
+
+  // Try each timeframe until one passes
+  for (const tf of TIMEFRAMES) {
+    // Fetch klines for this timeframe
+    const klines = enriched.klines; // We'll use the pre-fetched 5m for now
+    // In a real implementation, you'd fetch klines for each timeframe
+
+    if (klines.length < 15) continue;
+
+    // StochRSI - required for both paths
+    const sr = calculateStochRSI(
+      klines,
+      cfg.stochrsi.period,
+      cfg.stochrsi.kPeriod,
+      cfg.stochrsi.dPeriod,
+      cfg.stochrsi.smoothK
+    );
+
+    if (!validateStochRSISignal(sr)) continue;
+
+    // SuperTrend check
+    const st = calculateSuperTrend(klines, cfg.supertrend.period, cfg.supertrend.multiplier);
+    const stValid = validateSuperTrendSignal(st);
+
+    // EMA check (alternative to SuperTrend)
+    const ema = calculateAllEMAs(klines);
+    const emaValid = validateEMASignal(ema);
+
+    // OR logic: SuperTrend OR EMA must trigger
+    if (!stValid && !emaValid) continue;
+
+    const triggeredBy = stValid ? 'SuperTrend' : 'EMA';
+    console.log(`[SCAN] ${trending.symbol} Signal triggered on ${tf} by: ${triggeredBy}`);
+
+    // Build alert signal
+    const alertSignal = buildAlertFromTrending(
+      trending,
+      info,
+      security,
+      st,
+      sr,
+      priceChange5m,
+      priceChange1h,
+      'trending',
+      ema,
+      emaValid
+    );
+
+    // Set timeframe
+    alertSignal.timeframe = tf;
+
+    return { signal: alertSignal, passed: true, reason: `Indicator conditions met on ${tf} (${triggeredBy})`, timeframe: tf };
   }
 
-  // StochRSI - required for both paths
-  const sr = calculateStochRSI(
-    klines,
-    cfg.stochrsi.period,
-    cfg.stochrsi.kPeriod,
-    cfg.stochrsi.dPeriod,
-    cfg.stochrsi.smoothK
-  );
-  console.log(`[SCAN] ${trending.symbol} StochRSI: %K=${sr.k.toFixed(2)}, %D=${sr.d.toFixed(2)}, cross=${sr.crossedAbove}, overbought=${sr.overbought}`);
-
-  if (!validateStochRSISignal(sr)) {
-    return {
-      signal: null as unknown as AlertSignal,
-      passed: false,
-      reason: `StochRSI cross=${sr.crossedAbove}, overbought=${sr.overbought} — conditions not met`,
-    };
-  }
-
-  // SuperTrend check
-  const st = calculateSuperTrend(klines, cfg.supertrend.period, cfg.supertrend.multiplier);
-  console.log(`[SCAN] ${trending.symbol} SuperTrend: ${st.direction} (close=${st.price.toExponential(2)}, line=${st.value.toExponential(2)}, above=${st.priceAbove})`);
-
-  const stValid = validateSuperTrendSignal(st);
-
-  // EMA check (alternative to SuperTrend)
-  const ema = calculateAllEMAs(klines);
-  const emaValid = validateEMASignal(ema);
-  console.log(`[SCAN] ${trending.symbol} EMA: 25=${ema.ema25.toFixed(6)}, 50=${ema.ema50.toFixed(6)}, 100=${ema.ema100.toFixed(6)}, 200=${ema.ema200.toFixed(6)}, supportZone=${ema.supportZone}`);
-
-  // OR logic: SuperTrend OR EMA must trigger
-  if (!stValid && !emaValid) {
-    const reason = stValid
-      ? `EMA supportZone=${ema.supportZone} — not near support`
-      : `SuperTrend ${st.direction}, priceAbove=${st.priceAbove} — not bullish reclaim`;
-    return {
-      signal: null as unknown as AlertSignal,
-      passed: false,
-      reason: `Both indicators failed: ST=${st.direction}/${st.priceAbove}, EMA support=${ema.supportZone}`,
-    };
-  }
-
-  const triggeredBy = stValid ? 'SuperTrend' : 'EMA';
-  console.log(`[SCAN] ${trending.symbol} Signal triggered by: ${triggeredBy}`);
-
-  // Build alert signal
-  const alertSignal = buildAlertFromTrending(
-    trending,
-    info,
-    security,
-    st,
-    sr,
-    priceChange5m,
-    priceChange1h,
-    'trending',
-    ema,
-    emaValid
-  );
-
-  return { signal: alertSignal, passed: true, reason: `Indicator conditions met (${triggeredBy})` };
+  return { signal: null as unknown as AlertSignal, passed: false, reason: 'No timeframe passed indicator check', timeframe: '' };
 }
 
 // ─── Process signal stream (fast path) ──────────────────────────────────────
@@ -333,7 +327,7 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
 
     const enriched = result.value as EnrichedToken;
 
-    const check = checkIndicators(enriched, cfg);
+    const check = checkIndicatorsMultiTF(enriched, cfg);
     if (!check.passed) {
       console.log(`[SCAN] ${trendingToken.symbol} indicator check: ${check.reason}`);
       continue;

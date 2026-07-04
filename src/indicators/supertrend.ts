@@ -88,10 +88,16 @@ export function calculateSuperTrend(
 }
 
 /**
- * Valid signal: SuperTrend is bullish AND price reclaimed above the ST line.
+ * Valid signal: SuperTrend is bullish AND price is near/reclaimed the ST line (not too far above).
+ * Price should be within 5% above the ST line to be considered "near bottom".
  */
 export function validateSuperTrendSignal(result: SuperTrendResult): boolean {
-  return result.direction === 'bullish' && result.priceAbove;
+  if (result.direction !== 'bullish' || !result.priceAbove) return false;
+
+  // Check if price is near the ST line (within 5% above)
+  // This ensures we're catching dips near support, not pumps far above
+  const distancePercent = ((result.price - result.line) / result.line) * 100;
+  return distancePercent <= 5;
 }
 
 export default { calculateSuperTrend, validateSuperTrendSignal };

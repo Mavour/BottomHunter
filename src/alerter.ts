@@ -32,15 +32,17 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
   if (signal.ema.triggered && signal.ema.nearEmaLevel) {
     indicatorLine = `📍 EMA ${signal.ema.nearEmaLevel.period} Support — *$${signal.ema.nearEmaLevel.value.toFixed(6)}*`;
   } else {
-    indicatorLine = `📍 SuperTrend BULLISH — Price reclaimed ST line`;
+    indicatorLine = `📍 SuperTrend BULLISH — Price near ST line`;
   }
 
   const stochStatus = signal.stochrsi.crossedAbove ? '✅ Cross' : '⏳ Pending';
+  const tfLabel = signal.timeframe || '5m';
 
   const lines = [
     title,
     ``,
     indicatorLine,
+    `📊 Timeframe: *${tfLabel}*`,
     `📊 StochRSI ${stochStatus} — %K *${signal.stochrsi.k.toFixed(1)}* > %D ${signal.stochrsi.d.toFixed(1)}`,
     ``,
     `╭────────── 📋 *TOKEN INFO* ──────────╮`,

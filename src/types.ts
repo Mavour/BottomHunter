@@ -212,6 +212,8 @@ export interface AlertSignal {
   // Fee info (for display only)
   feeSol: number;
   feeRatioLabel: string;
+  // Timeframe that triggered the signal
+  timeframe: string;
   // Meta
   source: SignalSource;
   chartUrl: string;
