@@ -74,6 +74,91 @@ export class Alerter {
     this.sendEnabled = sendEnabled;
     if (sendEnabled && botToken) {
       this.bot = new Telegraf(botToken);
+      this.setupCommands();
+    }
+  }
+
+  private setupCommands(): void {
+    if (!this.bot) return;
+
+    // /start command
+    this.bot.command('start', (ctx) => {
+      const msg = [
+        `🟢 *Scanner Dip Bot*`,
+        ``,
+        `Bot ini akan mengirim alert ketika token Solana memenuhi kondisi:`,
+        `• SuperTrend BULLISH (near bottom)`,
+        `• ATAU EMA Support Zone (25/50/100/200)`,
+        `• + StochRSI Cross Up`,
+        ``,
+        `📊 *Timeframe:* 5m / 15m / 1h / 4h`,
+        `⛽ *Min Fee:* 30 SOL`,
+        `💰 *Min MCap:* $350,000`,
+        ``,
+        `*Commands:*`,
+        `/start — Tampilkan pesan ini`,
+        `/status — Cek status bot`,
+        `/help — Bantuan`,
+      ].join('\n');
+
+      ctx.reply(msg, { parse_mode: 'Markdown' });
+    });
+
+    // /status command
+    this.bot.command('status', (ctx) => {
+      const msg = [
+        `✅ *Bot Status: Running*`,
+        ``,
+        `⏱ Scan interval: 60 detik`,
+        `📊 Timeframes: 5m, 15m, 1h, 4h`,
+        `🔄 Mode: Alert-only (no auto-buy)`,
+      ].join('\n');
+
+      ctx.reply(msg, { parse_mode: 'Markdown' });
+    });
+
+    // /help command
+    this.bot.command('help', (ctx) => {
+      const msg = [
+        `📖 *Bantuan*`,
+        ``,
+        `Bot ini scan token Solana setiap 60 detik.`,
+        `Ketika ada token yang memenuhi kondisi indikator,`,
+        `bot akan mengirim alert ke chat ini.`,
+        ``,
+        `*Yang di-check:`,
+        `• SuperTrend (10,3) — near bottom`,
+        `• EMA 25/50/100/200 — support zone`,
+        `• StochRSI (14,14,3,3) — cross up`,
+        ``,
+        `*Filter:`,
+        `• Min Fee: 30 SOL`,
+        `• Min MCap: $350K`,
+        `• Min Vol: $500K`,
+        `• Min Liq: $5K`,
+        `• Min Age: 6 jam`,
+      ].join('\n');
+
+      ctx.reply(msg, { parse_mode: 'Markdown' });
+    });
+
+    // Handle all other messages
+    this.bot.on('message', (ctx) => {
+      ctx.reply('Ketik /start untuk memulai atau /help untuk bantuan.');
+    });
+  }
+
+  async startBot(): Promise<void> {
+    if (!this.bot) {
+      console.error('[ALERT] Bot not initialized');
+      return;
+    }
+
+    try {
+      await this.bot.launch();
+      console.log('[ALERT] ✅ Bot started and listening for commands');
+    } catch (err) {
+      console.error('[ALERT] ❌ Failed to start bot:', err);
     }
   }
 
@@ -105,7 +190,7 @@ export class Alerter {
   }
 
   async sendTestMessage(): Promise<boolean> {
-    const msg = '🧪 *Test Message*\\n\\nBot is running correctly!';
+    const msg = '🧪 *Test Message*\n\nBot is running correctly!';
 
     if (!this.sendEnabled) {
       console.log('[ALERT] Dry-run — test message NOT sent');
@@ -127,7 +212,9 @@ export class Alerter {
   }
 
   async stop(): Promise<void> {
-    if (this.bot) await this.bot.stop();
+    if (this.bot) {
+      this.bot.stop('SIGTERM');
+    }
   }
 }
 

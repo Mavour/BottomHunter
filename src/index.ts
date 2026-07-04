@@ -86,6 +86,9 @@ async function main(): Promise<void> {
   // Init alerter
   alerter = new Alerter(config.telegramBotToken, config.telegramChatId, config.telegramSendEnabled);
 
+  // Start bot to listen for commands
+  await alerter.startBot();
+
   // Send test message
   if (config.telegramSendEnabled) {
     console.log('[MAIN] Sending test Telegram message...');
