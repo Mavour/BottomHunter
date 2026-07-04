@@ -70,7 +70,7 @@ async function enrichToken(trending: GmgnTrending): Promise<EnrichedToken> {
   const [info, security, klines] = await Promise.all([
     getTokenInfo(trending.address),
     getTokenSecurity(trending.address),
-    getMarketKline(trending.address, '5m', 100),
+    getMarketKline(trending.address, '5m', 200),
   ]);
 
   const priceChange5m = calcPriceChange(klines, 5);
@@ -184,7 +184,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
       const [info, security, klines] = await Promise.all([
         getTokenInfo(mint),
         getTokenSecurity(mint),
-        getMarketKline(mint, '5m', 100),
+        getMarketKline(mint, '5m', 200),
       ]);
 
       if (klines.length < 15) continue;

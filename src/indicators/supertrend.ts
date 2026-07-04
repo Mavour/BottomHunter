@@ -1,45 +1,12 @@
 import { GmgnKline, SuperTrendResult } from '../types';
 
-/**
- * Wilder's Relative Moving Average
- * Same smoothing method as TradingView's built-in ATR
- */
-function rma(values: number[], period: number): number {
-  if (values.length < period) return 0;
-  let avg = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < values.length; i++) {
-    avg = (avg * (period - 1) + values[i]) / period;
-  }
-  return avg;
-}
-
-/**
- * True Range — max of:
- *   1. high - low
- *   2. |high - prevClose|
- *   3. |low - prevClose|
- */
 function trueRange(high: number, low: number, prevClose: number): number {
   return Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
 }
 
 /**
- * Calculate SuperTrend indicator.
- *
- * Reference: Mavour/meridian/tools/chart-indicators.js calcSupertrend()
- *
- * Formula:
- *   hl2     = (high + low) / 2
- *   ATR     = rma(true_range, period)
- *   lower   = hl2 - multiplier × ATR
- *   upper   = hl2 + multiplier × ATR
- *   prevLower = prev_hl2 - multiplier × ATR
- *   direction = close > prevLower ? bullish : bearish
- *   value     = direction === bullish ? lower : upper
- *
- * @param klines  OHLCV candles, oldest first (min length: period + 1)
- * @param period  ATR period (default: 10)
- * @param multiplier  ATR multiplier (default: 3)
+ * SuperTrend full array-based dengan band carry-over (TradingView-style).
+ * Ported from bravonoid tools/chart-indicators.js calcSupertrend()
  */
 export function calculateSuperTrend(
   klines: GmgnKline[],
@@ -50,52 +17,88 @@ export function calculateSuperTrend(
     return { value: 0, direction: 'bearish', priceAbove: false, price: 0, line: 0 };
   }
 
-  const closes = klines.map((k) => k.close);
-  const highs = klines.map((k) => k.high);
-  const lows = klines.map((k) => k.low);
+  const len = klines.length;
 
-  // Build True Range series
-  const trs: number[] = [];
-  for (let i = 1; i < klines.length; i++) {
-    trs.push(trueRange(highs[i], lows[i], closes[i - 1]));
+  // True Range
+  const tr = new Array(len).fill(0);
+  for (let i = 1; i < len; i++) {
+    tr[i] = trueRange(klines[i].high, klines[i].low, klines[i - 1].close);
   }
 
-  // ATR via Wilder's smoothing
-  const atr = rma(trs, period);
+  // ATR — Wilder's smoothing
+  const atr = new Array(len).fill(0);
+  let sum = 0;
+  for (let i = 1; i <= period; i++) sum += tr[i];
+  atr[period] = sum / period;
+  for (let i = period + 1; i < len; i++) {
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+  }
 
-  const lastIdx = klines.length - 1;
-  const prevIdx = lastIdx - 1;
+  // Bands + directions + values
+  const upperBand = new Array(len).fill(0);
+  const lowerBand = new Array(len).fill(0);
+  const directions = new Array<'bullish' | 'bearish'>(len).fill('bullish');
+  const values = new Array(len).fill(0);
 
-  const hl2 = (highs[lastIdx] + lows[lastIdx]) / 2;
-  const prevHl2 = (highs[prevIdx] + lows[prevIdx]) / 2;
-  const close = closes[lastIdx];
-  const prevClose = closes[prevIdx];
+  for (let i = period; i < len; i++) {
+    const hl2 = (klines[i].high + klines[i].low) / 2;
+    const basicUpper = hl2 + multiplier * atr[i];
+    const basicLower = hl2 - multiplier * atr[i];
 
-  const lower = hl2 - multiplier * atr;
-  const upper = hl2 + multiplier * atr;
-  const prevLower = prevHl2 - multiplier * atr;
+    if (i === period) {
+      upperBand[i] = basicUpper;
+      lowerBand[i] = basicLower;
+      directions[i] = klines[i].close <= basicLower ? 'bearish' : 'bullish';
+      values[i] = directions[i] === 'bullish' ? lowerBand[i] : upperBand[i];
+      continue;
+    }
 
-  const direction: 'bullish' | 'bearish' = close > prevLower ? 'bullish' : 'bearish';
-  const stValue = direction === 'bullish' ? lower : upper;
+    const prevClose = klines[i - 1].close;
+
+    // Band carry-over
+    if (basicUpper < upperBand[i - 1] || prevClose > upperBand[i - 1]) {
+      upperBand[i] = basicUpper;
+    } else {
+      upperBand[i] = upperBand[i - 1];
+    }
+
+    if (basicLower > lowerBand[i - 1] || prevClose < lowerBand[i - 1]) {
+      lowerBand[i] = basicLower;
+    } else {
+      lowerBand[i] = lowerBand[i - 1];
+    }
+
+    // Direction — only changes when price crosses prior band
+    const prevDir = directions[i - 1];
+    const close = klines[i].close;
+    if (prevDir === 'bearish' && close >= upperBand[i - 1]) {
+      directions[i] = 'bullish';
+    } else if (prevDir === 'bullish' && close <= lowerBand[i - 1]) {
+      directions[i] = 'bearish';
+    } else {
+      directions[i] = prevDir;
+    }
+    values[i] = directions[i] === 'bullish' ? lowerBand[i] : upperBand[i];
+  }
+
+  const last = len - 1;
+  const direction = directions[last];
+  const stValue = values[last];
 
   return {
     value: stValue,
     direction,
-    priceAbove: close > stValue,
-    price: close,
+    priceAbove: klines[last].close > stValue,
+    price: klines[last].close,
     line: stValue,
   };
 }
 
 /**
- * Valid signal: SuperTrend is bullish AND price is near/reclaimed the ST line (not too far above).
- * Price should be within 5% above the ST line to be considered "near bottom".
+ * Valid signal: SuperTrend bullish AND price near ST line (within 5%).
  */
 export function validateSuperTrendSignal(result: SuperTrendResult): boolean {
   if (result.direction !== 'bullish' || !result.priceAbove) return false;
-
-  // Check if price is near the ST line (within 5% above)
-  // This ensures we're catching dips near support, not pumps far above
   const distancePercent = ((result.price - result.line) / result.line) * 100;
   return distancePercent <= 5;
 }

@@ -1,7 +1,34 @@
 import { execFileSync } from 'child_process';
 import { GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, GmgnTrending, GmgnSignal } from '../types';
+import { cacheGet, cacheSet } from '../cache';
 
 const GMGN_API_BASE = 'https://openapi.gmgn.ai';
+
+// ─── Resolution helpers ───────────────────────────────────────────────────
+
+function resolutionToMs(resolution: string): number {
+  const n = parseInt(resolution, 10);
+  if (resolution.endsWith('m')) return n * 60_000;
+  if (resolution.endsWith('h')) return n * 60 * 60_000;
+  if (resolution.endsWith('d')) return n * 24 * 60 * 60_000;
+  return 5 * 60_000;
+}
+
+function candleTimeMs(time: number): number {
+  return time < 1_000_000_000_000 ? time * 1000 : time;
+}
+
+/**
+ * Filter out unclosed candles (masih forming) — ported from bravonoid.
+ * Candle dianggap closed jika startTime + intervalDuration <= now.
+ */
+export function closedCandlesOnly(klines: GmgnKline[], resolution: string, now = Date.now()): GmgnKline[] {
+  const durationMs = resolutionToMs(resolution);
+  return klines.filter((c) => {
+    const startMs = candleTimeMs(c.time);
+    return startMs + durationMs <= now;
+  });
+}
 
 // ─── CLI exec helper ────────────────────────────────────────────────────────
 
@@ -36,34 +63,28 @@ class RateLimitError extends Error {
   }
 }
 
-// ─── Concurrency limiter ────────────────────────────────────────────────────
+// ─── Serial request queue with 750ms min gap (bravonoid pattern) ───────────
 
-let concurrencyLimit = 10;
-let activeCount = 0;
-const waitQueue: Array<() => void> = [];
+const MIN_REQUEST_GAP_MS = 750;
+let lastRequestTime = 0;
+let requestChain = Promise.resolve();
 
-function acquireSlot(): Promise<void> {
-  return new Promise((resolve) => {
-    if (activeCount < concurrencyLimit) {
-      activeCount++;
-      resolve();
-    } else {
-      waitQueue.push(resolve);
-    }
-  });
+async function acquireSlot(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastRequestTime;
+  if (elapsed < MIN_REQUEST_GAP_MS) {
+    const waitMs = MIN_REQUEST_GAP_MS - elapsed;
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+  lastRequestTime = Date.now();
 }
 
 function releaseSlot(): void {
-  activeCount--;
-  const next = waitQueue.shift();
-  if (next) {
-    activeCount++;
-    next();
-  }
+  // No-op under serial queue — gap is enforced pre-request
 }
 
-export function setConcurrencyLimit(n: number): void {
-  concurrencyLimit = Math.max(1, n);
+export function setConcurrencyLimit(_n: number): void {
+  // Ignored — bravonoid pattern uses serial queue with min gap
 }
 
 // ─── JSON parser helper ─────────────────────────────────────────────────────
@@ -115,10 +136,19 @@ export async function validateGmgnConfig(): Promise<boolean> {
 export async function getMarketKline(
   mint: string,
   resolution = '5m',
-  limit = 100
+  limit = 200
 ): Promise<GmgnKline[]> {
+  const cacheKey = `kline:${mint}:${resolution}`;
+  const cached = cacheGet<GmgnKline[]>(cacheKey);
+  if (cached) return cached;
+
   const now = Math.floor(Date.now() / 1000);
-  const from = now - 3 * 60 * 60; // 3h back
+  const lookbackSec = resolution.endsWith('m')
+    ? parseInt(resolution, 10) * limit * 60 * 2
+    : resolution.endsWith('h')
+      ? parseInt(resolution, 10) * limit * 60 * 60 * 2
+      : 24 * 60 * 60;
+  const from = now - lookbackSec;
 
   await acquireSlot();
   try {
@@ -127,12 +157,15 @@ export async function getMarketKline(
       '--chain', 'sol',
       '--address', mint,
       '--resolution', resolution,
-      '--from', String(from),
+      '--from', String(Math.max(from, 0)),
       '--to', String(now),
       '--raw',
     ]);
     const data = parseJson<{ data?: { list?: GmgnKline[] } }>(raw, 'kline');
-    return data.data?.list ?? [];
+    const klines = data.data?.list ?? [];
+    const closedKlines = closedCandlesOnly(klines, resolution);
+    cacheSet(cacheKey, closedKlines, 60_000); // cache 1 menit
+    return closedKlines;
   } finally {
     releaseSlot();
   }
@@ -145,11 +178,17 @@ export async function getMarketKline(
  * GMGN CLI: gmgn-cli token info --chain sol --address <mint> --raw
  */
 export async function getTokenInfo(mint: string): Promise<GmgnTokenInfo | null> {
+  const cacheKey = `token:info:${mint}`;
+  const cached = cacheGet<GmgnTokenInfo | null>(cacheKey);
+  if (cached !== null) return cached;
+
   await acquireSlot();
   try {
     const raw = execGmgn(['token', 'info', '--chain', 'sol', '--address', mint, '--raw']);
     const data = parseJson<{ data?: GmgnTokenInfo }>(raw, 'token info');
-    return data.data ?? null;
+    const result = data.data ?? null;
+    cacheSet(cacheKey, result, 300_000); // cache 5 menit
+    return result;
   } catch {
     return null;
   } finally {
@@ -164,11 +203,17 @@ export async function getTokenInfo(mint: string): Promise<GmgnTokenInfo | null> 
  * GMGN CLI: gmgn-cli token security --chain sol --address <mint> --raw
  */
 export async function getTokenSecurity(mint: string): Promise<GmgnTokenSecurity | null> {
+  const cacheKey = `token:security:${mint}`;
+  const cached = cacheGet<GmgnTokenSecurity | null>(cacheKey);
+  if (cached !== null) return cached;
+
   await acquireSlot();
   try {
     const raw = execGmgn(['token', 'security', '--chain', 'sol', '--address', mint, '--raw']);
     const data = parseJson<{ data?: GmgnTokenSecurity }>(raw, 'token security');
-    return data.data ?? null;
+    const result = data.data ?? null;
+    cacheSet(cacheKey, result, 300_000); // cache 5 menit
+    return result;
   } catch {
     return null;
   } finally {
@@ -235,43 +280,62 @@ export async function getTrending(minCreatedHours = 3, limit = 100): Promise<Gmg
  * Requires GMGN_API_KEY env var.
  */
 export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | null; source: string | null }> {
+  const cacheKey = `token:fees:${mint}`;
+  const cached = cacheGet<{ feeSol: number | null; source: string | null }>(cacheKey);
+  if (cached !== null) return cached;
+
   const apiKey = process.env.GMGN_API_KEY;
   if (!apiKey) {
     return { feeSol: null, source: 'no_api_key' };
   }
+
+  let result: { feeSol: number | null; source: string | null } = { feeSol: null, source: 'unknown' };
 
   try {
     const res = await fetch(`${GMGN_API_BASE}/v1/token/info?chain=sol&address=${mint}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return { feeSol: null, source: `http_${res.status}` };
+    if (!res.ok) {
+      result = { feeSol: null, source: `http_${res.status}` };
+    } else {
+      const json: any = await res.json();
+      const info = json?.data ?? json;
 
-    const json: any = await res.json();
-    const info = json?.data ?? json;
-
-    // Cari fee fields — priority: pool_fees_sol > total_fees_sol > fee_sol
-    const poolFee = info?.pool_fees_sol ?? info?.poolFeesSol ?? null;
-    if (poolFee != null) return { feeSol: Number(poolFee), source: 'pool' };
-
-    const totalFee = info?.total_fees_sol ?? info?.totalFeesSol ?? info?.total_fee ?? info?.totalFee ?? null;
-    if (totalFee != null) return { feeSol: Number(totalFee), source: 'total' };
-
-    const genericFee = info?.fees_sol ?? info?.feesSol ?? info?.fee_sol ?? info?.feeSol ?? null;
-    if (genericFee != null) return { feeSol: Number(genericFee), source: 'generic' };
-
-    // Cek di dalam pools array jika ada
-    if (Array.isArray(info?.pools)) {
-      for (const pool of info.pools) {
-        const pf = pool?.pool_fees_sol ?? pool?.poolFeesSol ?? null;
-        if (pf != null) return { feeSol: Number(pf), source: 'pool' };
+      const poolFee = info?.pool_fees_sol ?? info?.poolFeesSol ?? null;
+      if (poolFee != null) {
+        result = { feeSol: Number(poolFee), source: 'pool' };
+      } else {
+        const totalFee = info?.total_fees_sol ?? info?.totalFeesSol ?? info?.total_fee ?? info?.totalFee ?? null;
+        if (totalFee != null) {
+          result = { feeSol: Number(totalFee), source: 'total' };
+        } else {
+          const genericFee = info?.fees_sol ?? info?.feesSol ?? info?.fee_sol ?? info?.feeSol ?? null;
+          if (genericFee != null) {
+            result = { feeSol: Number(genericFee), source: 'generic' };
+          } else if (Array.isArray(info?.pools)) {
+            let found = false;
+            for (const pool of info.pools) {
+              const pf = pool?.pool_fees_sol ?? pool?.poolFeesSol ?? null;
+              if (pf != null) {
+                result = { feeSol: Number(pf), source: 'pool' };
+                found = true;
+                break;
+              }
+            }
+            if (!found) result = { feeSol: null, source: 'not_found' };
+          } else {
+            result = { feeSol: null, source: 'not_found' };
+          }
+        }
       }
     }
-
-    return { feeSol: null, source: 'not_found' };
   } catch {
-    return { feeSol: null, source: 'fetch_failed' };
+    result = { feeSol: null, source: 'fetch_failed' };
   }
+
+  cacheSet(cacheKey, result, 300_000); // cache 5 menit
+  return result;
 }
 
 export { RateLimitError };
