@@ -68,14 +68,20 @@ export class Alerter {
   private bot: Telegraf | null = null;
   private chatId: string;
   private sendEnabled: boolean;
+  private pollIntervalMs: number;
 
-  constructor(botToken: string, chatId: string, sendEnabled: boolean) {
+  constructor(botToken: string, chatId: string, sendEnabled: boolean, pollIntervalMs = 60000) {
     this.chatId = chatId;
     this.sendEnabled = sendEnabled;
+    this.pollIntervalMs = pollIntervalMs;
     if (botToken) {
       this.bot = new Telegraf(botToken);
       this.setupCommands();
     }
+  }
+
+  setPollInterval(ms: number): void {
+    this.pollIntervalMs = ms;
   }
 
   private setupCommands(): void {
@@ -106,10 +112,11 @@ export class Alerter {
 
     // /status command
     this.bot.command('status', (ctx) => {
+      const intervalSec = this.pollIntervalMs / 1000;
       const msg = [
         `✅ *Bot Status: Running*`,
         ``,
-        `⏱ Scan interval: 60 detik`,
+        `⏱ Scan interval: ${intervalSec} detik`,
         `📊 Timeframes: 5m, 15m, 1h, 4h`,
         `🔄 Mode: Alert-only (no auto-buy)`,
       ].join('\n');
@@ -119,10 +126,11 @@ export class Alerter {
 
     // /help command
     this.bot.command('help', (ctx) => {
+      const intervalSec = this.pollIntervalMs / 1000;
       const msg = [
         `📖 *Bantuan*`,
         ``,
-        `Bot ini scan token Solana setiap 60 detik.`,
+        `Bot ini scan token Solana setiap ${intervalSec} detik.`,
         `Ketika ada token yang memenuhi kondisi indikator,`,
         `bot akan mengirim alert ke chat ini.`,
         ``,

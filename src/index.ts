@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   }
 
   // Init alerter
-  alerter = new Alerter(config.telegramBotToken, config.telegramChatId, config.telegramSendEnabled);
+  alerter = new Alerter(config.telegramBotToken, config.telegramChatId, config.telegramSendEnabled, config.pollIntervalMs);
 
   // Start bot to listen for commands
   await alerter.startBot();
