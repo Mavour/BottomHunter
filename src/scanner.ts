@@ -177,10 +177,27 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
       continue;
     }
 
-    // We need to find this token in trending data to get full filter data
-    // For now, just try to enrich and check indicators directly
-    // The filter engine will validate safety metrics
     try {
+      // Skip kalo mcap/volume terlalu kecil — filter dulu sebelum API calls
+      if (sig.market_cap != null && sig.market_cap < cfg.filters.mcap_min) {
+        continue;
+      }
+
+      // Fee check dulu sebelum enrichment
+      let tokenFeeSol: number | undefined;
+      if (cfg.filters.min_fee_sol > 0) {
+        const feeResult = await getTokenFeesSol(mint);
+        if (feeResult.feeSol == null) {
+          console.log(`[SCAN] ${mint.slice(0, 8)} fee unavailable (${feeResult.source}), skipping`);
+          continue;
+        }
+        if (feeResult.feeSol < cfg.filters.min_fee_sol) {
+          console.log(`[SCAN] ${mint.slice(0, 8)} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
+          continue;
+        }
+        tokenFeeSol = feeResult.feeSol;
+      }
+
       const [info, security, klines] = await Promise.all([
         getTokenInfo(mint),
         getTokenSecurity(mint),
@@ -197,21 +214,6 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         if (cfg.filters.rug_check.renounced_mint && !security.renounced_mint) continue;
         if (cfg.filters.rug_check.renounced_freeze_account && !security.renounced_freeze_account) continue;
         if (security.top_10_holder_rate > cfg.filters.top_10_holder_rate_max) continue;
-      }
-
-      // Fee check dari GMGN API (pool_fees_sol)
-      let tokenFeeSol: number | undefined;
-      if (cfg.filters.min_fee_sol > 0) {
-        const feeResult = await getTokenFeesSol(mint);
-        if (feeResult.feeSol == null) {
-          console.log(`[SCAN] ${mint.slice(0, 8)} fee unavailable (${feeResult.source}), skipping`);
-          continue;
-        }
-        if (feeResult.feeSol < cfg.filters.min_fee_sol) {
-          console.log(`[SCAN] ${mint.slice(0, 8)} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
-          continue;
-        }
-        tokenFeeSol = feeResult.feeSol;
       }
 
       // Synthesize a GmgnTrending-like object for multi-TF check
@@ -326,14 +328,35 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
 
   console.log(`[SCAN] ${candidates.length} candidates after filters`);
 
-  // Enrich candidates concurrently (respects rate limit via gmgn adapter)
+  // Fee check dulu sebelum enrichment — hindari API calls sia-sia
+  const feePassed: { token: GmgnTrending; feeSol: number }[] = [];
+  for (const t of candidates) {
+    if (cfg.filters.min_fee_sol > 0) {
+      const feeResult = await getTokenFeesSol(t.address);
+      if (feeResult.feeSol == null) {
+        console.log(`[SCAN] ${t.symbol} fee unavailable (${feeResult.source}), skipping`);
+        continue;
+      }
+      if (feeResult.feeSol < cfg.filters.min_fee_sol) {
+        console.log(`[SCAN] ${t.symbol} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
+        continue;
+      }
+      feePassed.push({ token: t, feeSol: feeResult.feeSol });
+    } else {
+      feePassed.push({ token: t, feeSol: 0 });
+    }
+  }
+
+  console.log(`[SCAN] ${feePassed.length} candidates after fee filter`);
+
+  // Enrich hanya token yang lolos fee
   const enrichedResults = await Promise.allSettled(
-    candidates.map((t) => enrichToken(t))
+    feePassed.map((fp) => enrichToken(fp.token))
   );
 
   for (let i = 0; i < enrichedResults.length; i++) {
     const result = enrichedResults[i];
-    const trendingToken = candidates[i];
+    const { token: trendingToken, feeSol: tokenFeeSol } = feePassed[i];
 
     if (result.status === 'rejected') {
       const err = result.reason;
@@ -346,21 +369,6 @@ async function processTrendingStream(cfg: AppConfig, alerter: Alerter, seenMints
     }
 
     const enriched = result.value as EnrichedToken;
-
-    // Fee check dari GMGN API (pool_fees_sol)
-    let tokenFeeSol: number | undefined;
-    if (cfg.filters.min_fee_sol > 0) {
-      const feeResult = await getTokenFeesSol(trendingToken.address);
-      if (feeResult.feeSol == null) {
-        console.log(`[SCAN] ${trendingToken.symbol} fee unavailable (${feeResult.source}), skipping`);
-        continue;
-      }
-      if (feeResult.feeSol < cfg.filters.min_fee_sol) {
-        console.log(`[SCAN] ${trendingToken.symbol} fee ${feeResult.feeSol.toFixed(2)} SOL < min ${cfg.filters.min_fee_sol} SOL`);
-        continue;
-      }
-      tokenFeeSol = feeResult.feeSol;
-    }
 
     try {
       const check = await checkIndicatorsMultiTF(trendingToken.address, {
