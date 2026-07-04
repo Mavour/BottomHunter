@@ -11,9 +11,18 @@
     "test": "jest",
     "lint": "tsc --noEmit"
   },
-  "keywords": ["solana", "gmgn", "supertrend", "ema", "telegram", "alert", "meme-coin"],
+  "keywords": [
+    "solana",
+    "gmgn",
+    "supertrend",
+    "ema",
+    "telegram",
+    "alert",
+    "meme-coin"
+  ],
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^17.4.2",
     "telegraf": "^4.16.3"
   },
   "devDependencies": {

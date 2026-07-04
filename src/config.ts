@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as dotenv from 'dotenv';
 import { AppConfig, FilterConfig } from './types';
+
+// Load .env file if present
+dotenv.config();
 
 export type { AppConfig } from './types';
 
