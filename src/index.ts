@@ -18,6 +18,9 @@ function printBanner(): void {
 // ─── Shutdown ───────────────────────────────────────────────────────────────
 
 let shuttingDown = false;
+let isScanInProgress = false;
+let consecutiveScanFailures = 0;
+let scannerDownAlerted = false;
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -66,10 +69,23 @@ let lastScanTimestamp = Date.now();
 
 async function executeScan(): Promise<void> {
   if (shuttingDown) return;
+
+  // Overlap guard — skip jika scan sebelumnya belum selesai
+  if (isScanInProgress) {
+    console.log('[MAIN] Scan sebelumnya belum selesai — skip tick ini');
+    return;
+  }
+
+  isScanInProgress = true;
   try {
     const stats = await runScan(config, alerter);
     lastScanTimestamp = Date.now();
     alerter.updateScanStats(stats.cycle);
+    // Reset escalation alert on success
+    consecutiveScanFailures = 0;
+    scannerDownAlerted = false;
+    alerter.setConsecutiveScanFailures(0);
+
     if (stats.cycle % config.heartbeatEveryNCycles === 0) {
       await alerter.sendHeartbeat(stats);
     }
@@ -77,6 +93,16 @@ async function executeScan(): Promise<void> {
     lastScanTimestamp = Date.now();
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error('[MAIN] Scan error:', errMsg);
+
+    consecutiveScanFailures++;
+    alerter.setConsecutiveScanFailures(consecutiveScanFailures);
+
+    // Escalation alert — 3 consecutive failures
+    if (consecutiveScanFailures >= 3 && !scannerDownAlerted) {
+      scannerDownAlerted = true;
+      await alerter.sendMessage('⚠️ *Scanner Down*\n\nBot gagal scan 3x berturut. Cek log VPS.\n_Coba /screening manual untuk test._').catch(() => {});
+    }
+
     const cycle = alerter.getScanCycleCount() + 1;
     alerter.updateScanStats(cycle);
     if (cycle % config.heartbeatEveryNCycles === 0) {
@@ -90,6 +116,7 @@ async function executeScan(): Promise<void> {
       });
     }
   } finally {
+    isScanInProgress = false;
     if (!shuttingDown) {
       const nextTime = new Date(Date.now() + config.pollIntervalMs).toLocaleTimeString();
       console.log(`[MAIN] Next scan scheduled at ${nextTime}`);

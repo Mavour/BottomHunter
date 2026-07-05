@@ -2,7 +2,15 @@
 
 GMGN Solana SuperTrend + EMA alert bot. Scans smart money signals and trending tokens, calculates SuperTrend or EMA support zone + StochRSI, sends Telegram alerts when technical conditions confirm a bullish bounce.
 
-**Alert-only — no auto-buy.** Data from GMGN API.
+**Alert-only — no auto-buy.**
+
+**Data sources:**
+| Field | Source | Notes |
+|-------|--------|-------|
+| Market Cap, Age, Liquidity, Holders | **Meteora** Pool Discovery API | Real on-chain data; Meteora DLMM pools only |
+| 24h Volume | **DexScreener** | ✅ Verified multi-pair aggregate; fallback to Meteora estimate if unavailable |
+| Smart Money Signals | **GMGN** signals |
+| Indicator Data (klines, info, security) | **GMGN** CLI | Circuit breaker auto-opens after 3 consecutive failures (5min cooldown) |
 
 ---
 
@@ -11,12 +19,12 @@ GMGN Solana SuperTrend + EMA alert bot. Scans smart money signals and trending t
 ```
 Every 60s:
   1. Fetch smart money buy signals
-     → filterTrending() (vol24h, liq, holders, rug, social, honeypot)
-     → if passed: fee check → enrich → indicators → alert
+     → vol24h from DexScreener → filterTrending() (mcap, liq, holders, rug, etc.)
+     → if passed: fee check → GMGN circuit? → enrich → indicators → alert
 
-  2. Fetch Meteora DLMM pools (server-side mcap filter, 24h volume window)
-     → age check → filterTrending() (same filter as signals)
-     → if passed: fee check → enrich → indicators → alert
+  2. Fetch Meteora DLMM pools (server-side mcap filter)
+     → age check → vol24h from DexScreener → filterTrending() (same filter)
+     → if passed: fee check → GMGN circuit? → enrich → indicators → alert
 ```
 
 **Signal trigger (both paths) — OR logic:**
@@ -200,17 +208,21 @@ Overbought gate: %K < 80
 
 ```
 src/
-├── adapters/gmgn.ts       # GMGN API wrapper
+├── adapters/
+│   ├── gmgn.ts            # GMGN CLI + REST API wrapper (circuit breaker included)
+│   ├── meteora.ts         # Meteora Pool Discovery API
+│   └── dexscreener.ts     # DexScreener API (24h volume source)
 ├── indicators/
 │   ├── supertrend.ts      # SuperTrend (10,3)
 │   ├── ema.ts             # EMA 25/50/100/200 support zone
 │   └── stochrsi.ts        # StochRSI (14,14,3,3)
 ├── filters.ts             # Filter engine + alert builder
-├── scanner.ts             # Scan loop: signal fast path → trending slow path
-├── alerter.ts             # Telegram formatter + sender
+├── scanner.ts             # Scan loop: signal fast path → Meteora pool path
+├── alerter.ts             # Telegram formatter + sender + command handlers
 ├── config.ts              # Env + filters.config.json loader
+├── cache.ts               # In-memory TTL cache
 ├── types.ts               # TypeScript interfaces
-└── index.ts               # Entry point, startup validation
+└── index.ts               # Entry point, startup validation, overlap guard, escalation
 ```
 
 ---
@@ -221,7 +233,7 @@ src/
 |---------|-------------|
 | `/start` | Show bot info and available commands |
 | `/status` | Check bot status (interval, timeframes, mode) |
-| `/health` | Last scan time, cycle count, poll interval |
+| `/health` | Last scan time, cycle count, poll interval, GMGN circuit status, consecutive scan failures |
 | `/screening` | Trigger an immediate manual scan |
 | `/help` | Show bot help and current filter thresholds |
 
@@ -241,6 +253,33 @@ Error heartbeat (sent when a scan cycle crashes):
 ❌ Cycle #12 error
 ⚠️ <error message>
 ```
+
+## Robustness Architecture
+
+### Overlap Guard
+Prevents overlapping scan cycles when a previous scan hasn't finished. If a scan is still in progress when the next tick fires, the tick is skipped with a log message (`[MAIN] Scan sebelumnya belum selesai — skip tick ini`). This prevents resource exhaustion on slow API responses.
+
+### GMGN Circuit Breaker
+Tracks consecutive failures from GMGN CLI calls (`getMarketKline`, `getTokenInfo`, `getTokenSecurity`, `getSignalBuys`). After **3 consecutive failures**, the circuit opens for **5 minutes**. During this time:
+- Tokens from **Meteora pools** still go through basic filters (age, mcap, liquidity, vol24h via DexScreener) and fee check, but GMGN enrichment + indicator checks are skipped. A `[SCAN] GMGN circuit open, skip indicator check (Meteora-only mode)` log entry is shown.
+- **Smart money signals** are skipped entirely since they require GMGN data.
+- Skipped tokens are counted in the heartbeat.
+- After the cooldown, the circuit resets automatically and logs `[GMGN] Circuit breaker reset after cooldown`.
+
+### Escalation Alert
+If the main scan loop throws an error **3 times consecutively**, the bot sends an escalation alert via Telegram:
+```
+⚠️ Scanner Down
+Bot gagal scan 3x berturut. Cek log VPS.
+```
+The counter resets on the next successful scan.
+
+### /health Command
+Enhanced health command shows:
+- Time since last scan
+- Cycle count
+- GMGN circuit status (Closed / Open with remaining cooldown in minutes)
+- Consecutive scan failure count
 
 ---
 

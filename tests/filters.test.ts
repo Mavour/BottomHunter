@@ -1,5 +1,5 @@
-import { filterTrending, checkTokenAge, calcVsAthPct } from '../src/filters';
-import { FilterConfig, GmgnTrending } from '../src/types';
+import { filterTrending, checkTokenAge, calcVsAthPct, sumKlineVolume } from '../src/filters';
+import { FilterConfig, GmgnTrending, GmgnKline } from '../src/types';
 
 const defaultConfig: FilterConfig = {
   rug_check: { renounced_mint: true, renounced_freeze_account: true },
@@ -102,6 +102,57 @@ describe('checkTokenAge', () => {
     const result = checkTokenAge(0, 3);
     expect(result.ok).toBe(false);
     expect(result.reason).toContain('never opened');
+  });
+});
+
+describe('sumKlineVolume', () => {
+  const nowMs = Date.now();
+
+  function makeCandle(timeOffsetMs: number, volume: number): GmgnKline {
+    return { time: nowMs - timeOffsetMs, open: 1, high: 1, low: 1, close: 1, volume };
+  }
+
+  function makeCandleSec(timeOffsetSec: number, volume: number): GmgnKline {
+    return { time: Math.floor(nowMs / 1000) - timeOffsetSec, open: 1, high: 1, low: 1, close: 1, volume };
+  }
+
+  it('sums volume from klines within default 24h window', () => {
+    const klines = [
+      makeCandle(0, 100),
+      makeCandle(6 * 3600 * 1000, 200),
+      makeCandle(12 * 3600 * 1000, 300),
+    ];
+    expect(sumKlineVolume(klines)).toBe(600);
+  });
+
+  it('excludes klines older than default 24h window', () => {
+    const klines = [
+      makeCandle(0, 100),
+      makeCandle(25 * 3600 * 1000, 999), // >24h
+    ];
+    expect(sumKlineVolume(klines)).toBe(100);
+  });
+
+  it('handles sec timestamps', () => {
+    const klines = [
+      makeCandleSec(0, 100),
+      makeCandleSec(12 * 3600, 200),
+      makeCandleSec(25 * 3600, 999), // >24h
+    ];
+    expect(sumKlineVolume(klines)).toBe(300);
+  });
+
+  it('returns 0 for empty array', () => {
+    expect(sumKlineVolume([])).toBe(0);
+  });
+
+  it('accepts custom maxAgeMs', () => {
+    const klines = [
+      makeCandle(0, 50),
+      makeCandle(1 * 3600 * 1000, 100),
+      makeCandle(3 * 3600 * 1000, 150),
+    ];
+    expect(sumKlineVolume(klines, 2 * 3600 * 1000)).toBe(150); // only 0 + 1h
   });
 });
 

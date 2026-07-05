@@ -1,4 +1,4 @@
-import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource, ScanStats } from './types';
+import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource, ScanStats, VolumeSource } from './types';
 import {
   getSignalBuys,
   getMarketKline,
@@ -7,12 +7,14 @@ import {
   getTokenFeesSol,
   setConcurrencyLimit,
   RateLimitError,
+  isGmgnCircuitOpen,
 } from './adapters/gmgn';
 import { discoverPools } from './adapters/meteora';
+import { getTokenVolume24h } from './adapters/dexscreener';
 import { calculateSuperTrend, validateSuperTrendSignal } from './indicators/supertrend';
 import { calculateStochRSI, validateStochRSISignal } from './indicators/stochrsi';
 import { calculateAllEMAs, validateEMASignal } from './indicators/ema';
-import { checkTokenAge, buildAlertFromTrending, filterTrending } from './filters';
+import { checkTokenAge, buildAlertFromTrending, filterTrending, sumKlineVolume } from './filters';
 import { Alerter } from './alerter';
 
 // ─── Price change from klines ───────────────────────────────────────────────
@@ -99,7 +101,8 @@ async function checkIndicatorsMultiTF(
   mint: string,
   trendingData: { symbol: string; trending: GmgnTrending; info: GmgnTokenInfo | null; security: GmgnTokenSecurity | null; priceChange5m: number; priceChange1h: number; vsAthPct: number },
   cfg: AppConfig,
-  feeSol?: number
+  feeSol?: number,
+  volumeSource: VolumeSource = 'dexscreener',
 ): Promise<IndicatorCheck> {
   // Try each timeframe until one passes
   for (const tf of TIMEFRAMES) {
@@ -149,7 +152,8 @@ async function checkIndicatorsMultiTF(
       'trending',
       ema,
       emaValid,
-      feeSol
+      feeSol,
+      volumeSource,
     );
 
     alertSignal.timeframe = tf;
@@ -162,7 +166,7 @@ async function checkIndicatorsMultiTF(
 
 // ─── Process signal stream (fast path) ──────────────────────────────────────
 
-async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { signalsChecked: number; alertsSent: number }): Promise<void> {
+async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { signalsChecked: number; alertsSent: number; circuitSkipped?: number }): Promise<void> {
   console.log('[SCAN] Fetching smart money signals...');
   const signals = await getSignalBuys(50);
   console.log(`[SCAN] Got ${signals.length} signals`);
@@ -200,6 +204,14 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         tokenFeeSol = feeResult.feeSol;
       }
 
+      // GMGN circuit breaker check
+      const gmgnCircuit = isGmgnCircuitOpen();
+      if (gmgnCircuit.open) {
+        console.log(`[SCAN] ${mint.slice(0, 8)} GMGN circuit open, skip signal`);
+        stats.circuitSkipped = (stats.circuitSkipped ?? 0) + 1;
+        continue;
+      }
+
       const [info, security, klines] = await Promise.all([
         getTokenInfo(mint),
         getTokenSecurity(mint),
@@ -210,6 +222,14 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
 
       const priceChange5m = calcPriceChange(klines, 5);
       const priceChange1h = calcPriceChange(klines, 60);
+
+      // vol24h dari DexScreener (sumber utama), bukan GMGN/Meteora
+      const dexVol = await getTokenVolume24h(mint);
+      let volumeSource: VolumeSource = 'dexscreener';
+      const signalVol = dexVol ?? 0;
+      if (dexVol === null) {
+        volumeSource = 'meteora_estimate';
+      }
 
       // Synthesize a GmgnTrending-like object for filter + multi-TF check
       const syntheticTrending: GmgnTrending = {
@@ -222,7 +242,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         price_change_24h: 0,
         market_cap: sig.market_cap,
         liquidity: info?.liquidity ?? 0,
-        volume_24h: 0,
+        volume_24h: signalVol,
         swaps: 0,
         holder_count: info?.holder_count ?? 0,
         top_10_holder_rate: security?.top_10_holder_rate ?? 0,
@@ -263,7 +283,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         priceChange5m,
         priceChange1h,
         vsAthPct,
-      }, cfg, tokenFeeSol);
+      }, cfg, tokenFeeSol, volumeSource);
       if (!check.passed) continue;
 
       setCooldown(mint, cfg.scan.cooldownMinutes);
@@ -282,7 +302,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
 
 // ─── Process pools from Meteora (server-side filtered by mcap) ─────────────
 
-async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>, stats: { poolsChecked: number; alertsSent: number }): Promise<void> {
+async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>, stats: { poolsChecked: number; alertsSent: number; circuitSkipped?: number }): Promise<void> {
   console.log(`[SCAN] Fetching Meteora pools (mcap >= ${cfg.filters.mcap_min})...`);
 
   const maxMcap = cfg.filters.mcap_max > 0 ? cfg.filters.mcap_max : 100_000_000;
@@ -304,11 +324,29 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
 
     stats.poolsChecked++;
 
+    // vol24h dari DexScreener — field Meteora terbukti salah label, lihat: CHANCE $5356 vs real $1.8M
+    const dexVol = await getTokenVolume24h(pool.base.mint);
+    let volumeSource: VolumeSource = 'dexscreener';
+    let vol24h: number;
+
+    if (dexVol !== null) {
+      vol24h = dexVol;
+    } else {
+      console.log(`[SCAN] ${symbol} DexScreener volume unavailable, using Meteora estimate (unverified)`);
+      vol24h = pool.volume_window;
+      volumeSource = 'meteora_estimate';
+    }
+
+    if (vol24h < cfg.filters.vol24h_min) {
+      console.log(`[SCAN] ${symbol} vol24h $${vol24h.toFixed(0)} < min $${cfg.filters.vol24h_min} (${volumeSource})`);
+      continue;
+    }
+
     // Build synthetic GmgnTrending untuk filter + indicator check
     const trending: GmgnTrending = {
       address: pool.base.mint, symbol, name: pool.name,
       price: pool.price, price_change_5m: 0, price_change_1h: pool.price_change_pct, price_change_24h: 0,
-      market_cap: pool.mcap, liquidity: pool.active_tvl, volume_24h: pool.volume_window,
+      market_cap: pool.mcap, liquidity: pool.active_tvl, volume_24h: vol24h,
       swaps: 0, holder_count: pool.holders,
       top_10_holder_rate: 0, dev_team_hold_rate: 0,
       suspected_insider_hold_rate: 0, rat_trader_amount_rate: 0, bundler_trader_amount_rate: 0,
@@ -320,7 +358,7 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
 
     seenMints.add(mintKey);
 
-    // Full filter check sebelum fee check & GMGN API call
+    // Full filter check sebelum fee check & GMGN API call (volume already verified above, but keep filter for mcap/liq/etc.)
     const filterResult = filterTrending(trending, cfg.filters);
     if (!filterResult.passed) {
       console.log(`[SCAN] ${symbol} filtered: ${filterResult.reason}`);
@@ -346,6 +384,14 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
       }
     }
 
+    // GMGN circuit breaker check — skip indicator check if GMGN is down
+    const gmgnCircuit = isGmgnCircuitOpen();
+    if (gmgnCircuit.open) {
+      console.log(`[SCAN] ${symbol} GMGN circuit open, skip indicator check (Meteora-only mode)`);
+      stats.circuitSkipped = (stats.circuitSkipped ?? 0) + 1;
+      continue;
+    }
+
     // Coba enrich GMGN — kalo gagal (403) proceed dengan Meteora data aja
     let info: GmgnTokenInfo | null = null;
     let security: GmgnTokenSecurity | null = null;
@@ -367,10 +413,10 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
         ? (1 - info.price.price / info.ath_price) * 100 : 0;
 
       try {
-        const check = await checkIndicatorsMultiTF(pool.base.mint, {
-            symbol, trending, info, security,
-            priceChange5m, priceChange1h, vsAthPct,
-          }, cfg, tokenFeeSol);
+      const check = await checkIndicatorsMultiTF(pool.base.mint, {
+          symbol, trending, info, security,
+          priceChange5m, priceChange1h, vsAthPct,
+        }, cfg, tokenFeeSol, volumeSource);
         if (!check.passed) {
           console.log(`[SCAN] ${symbol} indicator check: ${check.reason}`);
           continue;
@@ -403,7 +449,7 @@ export async function runScan(cfg: AppConfig, alerter: Alerter): Promise<ScanSta
   setConcurrencyLimit(10);
   const seenMints = new Set<string>();
 
-  const stats = { signalsChecked: 0, poolsChecked: 0, alertsSent: 0 };
+  const stats = { signalsChecked: 0, poolsChecked: 0, alertsSent: 0, circuitSkipped: 0 };
 
   // Fast path: smart money signals first
   await processSignalStream(cfg, alerter, stats);

@@ -221,7 +221,11 @@ export async function getMarketKline(
     const klines = data.data?.list ?? [];
     const closedKlines = closedCandlesOnly(klines, resolution);
     cacheSet(cacheKey, closedKlines, 60_000); // cache 1 menit
+    recordGmgnResult(true);
     return closedKlines;
+  } catch (e) {
+    recordGmgnResult(false);
+    throw e;
   } finally {
     releaseSlot();
   }
@@ -244,8 +248,10 @@ export async function getTokenInfo(mint: string): Promise<GmgnTokenInfo | null> 
     const data = parseJson<{ data?: GmgnTokenInfo }>(raw, 'token info');
     const result = data.data ?? null;
     cacheSet(cacheKey, result, 300_000); // cache 5 menit
+    recordGmgnResult(true);
     return result;
   } catch {
+    recordGmgnResult(false);
     return null;
   } finally {
     releaseSlot();
@@ -269,8 +275,10 @@ export async function getTokenSecurity(mint: string): Promise<GmgnTokenSecurity 
     const data = parseJson<{ data?: GmgnTokenSecurity }>(raw, 'token security');
     const result = data.data ?? null;
     cacheSet(cacheKey, result, 300_000); // cache 5 menit
+    recordGmgnResult(true);
     return result;
   } catch {
+    recordGmgnResult(false);
     return null;
   } finally {
     releaseSlot();
@@ -288,8 +296,10 @@ export async function getSignalBuys(limit = 50): Promise<GmgnSignal[]> {
   try {
     const raw = execGmgn(['market', 'signal', '--chain', 'sol', '--signal-type', '12', '--raw']);
     const data = parseJson<{ data?: GmgnSignal[] }>(raw, 'signal');
+    recordGmgnResult(true);
     return data.data ?? [];
   } catch {
+    recordGmgnResult(false);
     return [];
   } finally {
     releaseSlot();
@@ -444,3 +454,40 @@ function extractFeeInfo(info: any): { feeSol: number | null; source: string | nu
 }
 
 export { RateLimitError };
+
+// ─── Circuit Breaker ───────────────────────────────────────────────────
+
+interface GmgnHealth {
+  consecutiveFailures: number;
+  circuitOpenUntil: number;
+}
+
+const CIRCUIT_THRESHOLD = 3;
+const CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+
+const gmgnHealth: GmgnHealth = { consecutiveFailures: 0, circuitOpenUntil: 0 };
+
+export function isGmgnCircuitOpen(): { open: boolean; remainingCooldownMs: number } {
+  const now = Date.now();
+  if (gmgnHealth.circuitOpenUntil > now) {
+    return { open: true, remainingCooldownMs: gmgnHealth.circuitOpenUntil - now };
+  }
+  if (gmgnHealth.circuitOpenUntil > 0 && gmgnHealth.circuitOpenUntil <= now) {
+    gmgnHealth.consecutiveFailures = 0;
+    gmgnHealth.circuitOpenUntil = 0;
+    console.log('[GMGN] Circuit breaker reset after cooldown');
+  }
+  return { open: false, remainingCooldownMs: 0 };
+}
+
+export function recordGmgnResult(success: boolean): void {
+  if (success) {
+    gmgnHealth.consecutiveFailures = 0;
+  } else {
+    gmgnHealth.consecutiveFailures++;
+    if (gmgnHealth.consecutiveFailures >= CIRCUIT_THRESHOLD) {
+      gmgnHealth.circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+      console.log(`[GMGN] Circuit OPEN after ${gmgnHealth.consecutiveFailures} consecutive failures (cooldown ${CIRCUIT_COOLDOWN_MS / 60000}min)`);
+    }
+  }
+}

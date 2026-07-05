@@ -1,4 +1,20 @@
-import { FilterConfig, GmgnTrending, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal } from './types';
+import { FilterConfig, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, VolumeSource } from './types';
+
+/**
+ * Sum USD volume from kline candles within maxAgeMs (default 24h).
+ * Handles both ms and sec timestamps.
+ */
+export function sumKlineVolume(klines: GmgnKline[], maxAgeMs: number = 24 * 60 * 60 * 1000): number {
+  const cutoff = Date.now() - maxAgeMs;
+  let total = 0;
+  for (const k of klines) {
+    const t = k.time < 1_000_000_000_000 ? k.time * 1000 : k.time;
+    if (t >= cutoff) {
+      total += k.volume;
+    }
+  }
+  return total;
+}
 
 /**
  * Check token age using open_timestamp (time trading opened).
@@ -99,7 +115,8 @@ export function buildAlertFromTrending(
   source: 'signal' | 'trending',
   ema?: { ema25: number; ema50: number; ema100: number; ema200: number; nearEmaLevel: { period: number; value: number } | null; supportZone: boolean },
   emaTriggered?: boolean,
-  feeSol?: number
+  feeSol?: number,
+  volumeSource: VolumeSource = 'dexscreener',
 ): AlertSignal {
   const currentPrice = info?.price?.price ?? t.price;
   const athPrice = info?.ath_price ?? 0;
@@ -116,6 +133,7 @@ export function buildAlertFromTrending(
     name: t.name,
     marketCap: t.market_cap,
     volume24h: t.volume_24h,
+    volumeSource,
     liquidity: t.liquidity,
     holders: t.holder_count,
     priceChange5m,

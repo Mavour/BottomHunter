@@ -1,5 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { AlertSignal, SignalSource, ScanStats } from './types';
+import { isGmgnCircuitOpen } from './adapters/gmgn';
 
 // ─── Formatters ─────────────────────────────────────────────────────────────
 
@@ -38,6 +39,8 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
   const stochStatus = signal.stochrsi.crossedAbove ? '✅ Cross' : '⏳ Pending';
   const tfLabel = signal.timeframe || '5m';
 
+  const volSourceLabel = signal.volumeSource === 'dexscreener' ? '✅ (DexScreener)' : '⚠️ (estimasi)';
+
   const lines = [
     title,
     ``,
@@ -48,7 +51,7 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
     `╭────────── 📋 *TOKEN INFO* ──────────╮`,
     `│ CA: \`${signal.mint}\``,
     `│ 💰 MCap: *$${fmtNum(signal.marketCap)}*`,
-    `│ 📈 Vol 24h: *$${fmtNum(signal.volume24h)}*`,
+    `│ 📈 Vol 24h: *$${fmtNum(signal.volume24h)}* ${volSourceLabel}`,
     `│ 💧 Liquidity: *$${fmtNum(signal.liquidity)}*`,
     `│ 👥 Holders: *${signal.holders.toLocaleString()}*`,
     `│ 💰 Fee: *${signal.feeSol.toFixed(2)} SOL*`,
@@ -72,6 +75,7 @@ export class Alerter {
   private scanHandler: (() => Promise<void>) | null = null;
   private lastScanTimestamp = Date.now();
   private scanCycleCount = 0;
+  private consecutiveScanFailures = 0;
 
   constructor(botToken: string, chatId: string, sendEnabled: boolean, pollIntervalMs = 60000) {
     this.chatId = chatId;
@@ -158,12 +162,22 @@ export class Alerter {
     // /health command
     this.bot.command('health', (ctx) => {
       const secondsSinceLastScan = Math.round((Date.now() - this.lastScanTimestamp) / 1000);
+      const circuit = isGmgnCircuitOpen();
+      let circuitStatus: string;
+      if (circuit.open) {
+        const remainingMin = Math.round(circuit.remainingCooldownMs / 60000);
+        circuitStatus = `🔴 Open (reset in ${remainingMin}min)`;
+      } else {
+        circuitStatus = `🟢 Closed`;
+      }
       const msg = [
         `🤖 *Health Check*`,
         ``,
         `⏱ Last scan: ${secondsSinceLastScan}s ago`,
         `🔄 Cycle #${this.scanCycleCount}`,
         `📊 Poll interval: ${this.pollIntervalMs / 1000}s`,
+        `🌐 GMGN Circuit: ${circuitStatus}`,
+        `❌ Consecutive scan failures: ${this.consecutiveScanFailures}`,
       ].join('\n');
       ctx.reply(msg, { parse_mode: 'Markdown' });
     });
@@ -297,6 +311,32 @@ export class Alerter {
       return true;
     } catch (err) {
       console.error('[ALERT] Startup notification failed:', err);
+      return false;
+    }
+  }
+
+  setConsecutiveScanFailures(n: number): void {
+    this.consecutiveScanFailures = n;
+  }
+
+  async sendMessage(text: string): Promise<boolean> {
+    console.log(`[ALERT] Sending message: ${text.slice(0, 80)}...`);
+
+    if (!this.sendEnabled) {
+      console.log('[ALERT] Dry-run mode — message NOT sent');
+      return true;
+    }
+
+    if (!this.bot) {
+      console.error('[ALERT] Bot not initialized for sendMessage');
+      return false;
+    }
+
+    try {
+      await this.bot.telegram.sendMessage(this.chatId, text, { parse_mode: 'Markdown' });
+      return true;
+    } catch (err) {
+      console.error(`[ALERT] sendMessage failed: ${err}`);
       return false;
     }
   }
