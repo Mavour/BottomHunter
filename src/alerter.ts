@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import { AlertSignal, SignalSource } from './types';
+import { AlertSignal, SignalSource, ScanStats } from './types';
 
 // ─── Formatters ─────────────────────────────────────────────────────────────
 
@@ -70,6 +70,8 @@ export class Alerter {
   private sendEnabled: boolean;
   private pollIntervalMs: number;
   private scanHandler: (() => Promise<void>) | null = null;
+  private lastScanTimestamp = Date.now();
+  private scanCycleCount = 0;
 
   constructor(botToken: string, chatId: string, sendEnabled: boolean, pollIntervalMs = 60000) {
     this.chatId = chatId;
@@ -88,6 +90,14 @@ export class Alerter {
   onScanRequest(handler: () => Promise<void>): void {
     this.scanHandler = handler;
   }
+
+  updateScanStats(cycle: number): void {
+    this.scanCycleCount = cycle;
+    this.lastScanTimestamp = Date.now();
+  }
+
+  getScanCycleCount(): number { return this.scanCycleCount; }
+  getLastScanTimestamp(): number { return this.lastScanTimestamp; }
 
   private setupCommands(): void {
     if (!this.bot) return;
@@ -143,6 +153,19 @@ export class Alerter {
       } catch (err) {
         await ctx.reply(`❌ *Scan error:* ${err}`, { parse_mode: 'Markdown' });
       }
+    });
+
+    // /health command
+    this.bot.command('health', (ctx) => {
+      const secondsSinceLastScan = Math.round((Date.now() - this.lastScanTimestamp) / 1000);
+      const msg = [
+        `🤖 *Health Check*`,
+        ``,
+        `⏱ Last scan: ${secondsSinceLastScan}s ago`,
+        `🔄 Cycle #${this.scanCycleCount}`,
+        `📊 Poll interval: ${this.pollIntervalMs / 1000}s`,
+      ].join('\n');
+      ctx.reply(msg, { parse_mode: 'Markdown' });
     });
 
     // /help command
@@ -216,6 +239,46 @@ export class Alerter {
       return true;
     } catch (err) {
       console.error(`[ALERT] ❌ Failed to send: ${err}`);
+      return false;
+    }
+  }
+
+  async sendHeartbeat(stats: ScanStats): Promise<boolean> {
+    const duration = (stats.durationMs / 1000).toFixed(1);
+    let msg: string;
+    if (stats.error) {
+      msg = [
+        `❌ *Cycle #${stats.cycle} error*`,
+        ``,
+        `⚠️ ${stats.error}`,
+      ].join('\n');
+    } else {
+      msg = [
+        `🔄 *Cycle #${stats.cycle} selesai*`,
+        ``,
+        `⏱ ${duration}s | 🔍 ${stats.signalsChecked} signal, ${stats.poolsChecked} pool dicek | 🔔 ${stats.alertsSent} alert`,
+      ].join('\n');
+    }
+
+    console.log(`[ALERT] Heartbeat cycle #${stats.cycle}: ${stats.error ? 'ERROR' : 'OK'}`);
+    console.log(msg);
+    console.log('─'.repeat(40));
+
+    if (!this.sendEnabled) {
+      console.log('[ALERT] Dry-run — heartbeat NOT sent');
+      return true;
+    }
+
+    if (!this.bot) {
+      console.error('[ALERT] Bot not initialized for heartbeat');
+      return false;
+    }
+
+    try {
+      await this.bot.telegram.sendMessage(this.chatId, msg, { parse_mode: 'Markdown' });
+      return true;
+    } catch (err) {
+      console.error(`[ALERT] Heartbeat send failed: ${err}`);
       return false;
     }
   }

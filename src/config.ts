@@ -100,12 +100,17 @@ export function loadConfig(): AppConfig {
   const configPath = env('FILTERS_CONFIG_PATH', './filters.config.json');
   const filters = loadFilterConfig(configPath);
 
+  const pollIntervalMs = envNum('POLL_INTERVAL_MS', 60_000);
+  const heartbeatDefault = pollIntervalMs >= 300_000 ? 1 : 5;
+  const heartbeatEveryNCycles = envNum('HEARTBEAT_EVERY_N_CYCLES', heartbeatDefault);
+
   return {
     gmgnApiKey: env('GMGN_API_KEY', ''),
     telegramBotToken: botToken,
     telegramChatId: chatId,
     telegramSendEnabled: envBool('TELEGRAM_SEND_ENABLED', false),
-    pollIntervalMs: envNum('POLL_INTERVAL_MS', 60_000),
+    pollIntervalMs,
+    heartbeatEveryNCycles,
     filters,
     scan: {
       minAgeHours: filters.min_token_age_hours ?? 6,

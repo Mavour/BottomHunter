@@ -4,24 +4,18 @@ import { FilterConfig, GmgnTrending } from '../src/types';
 const defaultConfig: FilterConfig = {
   rug_check: { renounced_mint: true, renounced_freeze_account: true },
   top_10_holder_rate_max: 60,
-  dev_team_hold_rate_max: 10,
-  suspected_insider_hold_rate_max: 25,
-  rat_trader_amount_rate_max: 15,
-  bundler_trader_amount_rate_max: 30,
-  sniper_count_max: 100,
-  bot_degen_count_max: 20,
-  smart_degen_count_min: 1,
-  renowned_count_min: 0,
   vol24h_min: 1000,
   mcap_min: 10000,
   mcap_max: 0,
   min_liquidity_usd: 0,
   min_holders: 0,
+  min_fee_sol: 30,
   vs_ath_pct_min: 0,
   vs_ath_pct_max: 95,
   require_not_wash_trading: false,
   require_has_social: false,
   require_not_honeypot: false,
+  min_token_age_hours: 6,
 };
 
 function makeToken(overrides: Partial<GmgnTrending> = {}): GmgnTrending {
@@ -75,24 +69,6 @@ describe('filterTrending', () => {
     const result = filterTrending(makeToken({ top_10_holder_rate: 75 }), defaultConfig);
     expect(result.passed).toBe(false);
     expect(result.reason).toContain('top10');
-  });
-
-  it('rejects when dev team hold exceeds max', () => {
-    const result = filterTrending(makeToken({ dev_team_hold_rate: 15 }), defaultConfig);
-    expect(result.passed).toBe(false);
-    expect(result.reason).toContain('dev');
-  });
-
-  it('rejects when insider rate exceeds max', () => {
-    const result = filterTrending(makeToken({ suspected_insider_hold_rate: 30 }), defaultConfig);
-    expect(result.passed).toBe(false);
-    expect(result.reason).toContain('insider');
-  });
-
-  it('rejects when smart degen count below min', () => {
-    const result = filterTrending(makeToken({ smart_degen_count: 0 }), defaultConfig);
-    expect(result.passed).toBe(false);
-    expect(result.reason).toContain('smart_degen');
   });
 
   it('rejects when volume below min', () => {

@@ -157,6 +157,7 @@ export interface AppConfig {
   telegramChatId: string;
   telegramSendEnabled: boolean;
   pollIntervalMs: number;
+  heartbeatEveryNCycles: number;
   filters: FilterConfig;
   scan: {
     minAgeHours: number;
@@ -172,6 +173,15 @@ export interface AppConfig {
     dPeriod: number;
     smoothK: number;
   };
+}
+
+export interface ScanStats {
+  cycle: number;
+  signalsChecked: number;
+  poolsChecked: number;
+  alertsSent: number;
+  durationMs: number;
+  error?: string;
 }
 
 // ─── Alert Signal ──────────────────────────────────────────────────────────

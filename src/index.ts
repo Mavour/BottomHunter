@@ -2,6 +2,7 @@ import { loadConfig, AppConfig } from './config';
 import { validateGmgnConfig } from './adapters/gmgn';
 import { Alerter } from './alerter';
 import { runScan } from './scanner';
+import { ScanStats } from './types';
 
 // ─── Banner ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,35 @@ async function validateStartup(): Promise<boolean> {
 
 let alerter: Alerter;
 let config: AppConfig;
+let lastScanTimestamp = Date.now();
+
+async function executeScan(): Promise<void> {
+  if (shuttingDown) return;
+  try {
+    const stats = await runScan(config, alerter);
+    lastScanTimestamp = Date.now();
+    alerter.updateScanStats(stats.cycle);
+    if (stats.cycle % config.heartbeatEveryNCycles === 0) {
+      await alerter.sendHeartbeat(stats);
+    }
+  } catch (err) {
+    lastScanTimestamp = Date.now();
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[MAIN] Scan error:', errMsg);
+    const cycle = alerter.getScanCycleCount() + 1;
+    alerter.updateScanStats(cycle);
+    if (cycle % config.heartbeatEveryNCycles === 0) {
+      await alerter.sendHeartbeat({
+        cycle,
+        signalsChecked: 0,
+        poolsChecked: 0,
+        alertsSent: 0,
+        durationMs: 0,
+        error: errMsg,
+      });
+    }
+  }
+}
 
 async function main(): Promise<void> {
   printBanner();
@@ -73,7 +103,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`[MAIN] Poll interval: ${config.pollIntervalMs / 1000}s`);
+  console.log(`[MAIN] Poll interval confirmed: ${config.pollIntervalMs}ms (${config.pollIntervalMs / 60000} minutes)`);
+  console.log(`[MAIN] Heartbeat every: ${config.heartbeatEveryNCycles} cycle(s)`);
   console.log(`[MAIN] Telegram send: ${config.telegramSendEnabled ? 'ENABLED' : 'DRY-RUN'}`);
   console.log(`[MAIN] SuperTrend: period=${config.supertrend.period}, multiplier=${config.supertrend.multiplier}`);
   console.log(`[MAIN] StochRSI: k=${config.stochrsi.kPeriod}, d=${config.stochrsi.dPeriod}, smoothK=${config.stochrsi.smoothK}`);
@@ -87,7 +118,7 @@ async function main(): Promise<void> {
   alerter = new Alerter(config.telegramBotToken, config.telegramChatId, config.telegramSendEnabled, config.pollIntervalMs);
 
   // Start bot to listen for commands
-  alerter.onScanRequest(() => runScan(config, alerter));
+  alerter.onScanRequest(() => executeScan());
   await alerter.startBot();
 
   // Send startup notification
@@ -105,21 +136,10 @@ async function main(): Promise<void> {
 
   // Run first scan immediately
   console.log('[MAIN] Running initial scan...');
-  try {
-    await runScan(config, alerter);
-  } catch (err) {
-    console.error('[MAIN] Initial scan error:', err);
-  }
+  await executeScan();
 
   // Schedule periodic scans
-  pollTimer = setInterval(async () => {
-    if (shuttingDown) return;
-    try {
-      await runScan(config, alerter);
-    } catch (err) {
-      console.error('[MAIN] Scan error:', err);
-    }
-  }, config.pollIntervalMs);
+  pollTimer = setInterval(executeScan, config.pollIntervalMs);
 
   console.log(`[MAIN] Bot running — scanning every ${config.pollIntervalMs / 1000}s`);
 }

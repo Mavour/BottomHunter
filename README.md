@@ -11,17 +11,19 @@ GMGN Solana SuperTrend + EMA alert bot. Scans smart money signals and trending t
 ```
 Every 60s:
   1. Fetch smart money buy signals
-     → fast path: if (SuperTrend green OR EMA support) + StochRSI cross → alert immediately
+     → filterTrending() (vol24h, liq, holders, rug, social, honeypot)
+     → if passed: fee check → enrich → indicators → alert
 
-  2. Fetch trending tokens
-     → slow path: apply filters → check indicators → alert if valid
+  2. Fetch Meteora DLMM pools (server-side mcap filter)
+     → age check → filterTrending() (same filter as signals)
+     → if passed: fee check → enrich → indicators → alert
 ```
 
 **Signal trigger (both paths) — OR logic:**
 - **Path A — SuperTrend:** SuperTrend (10, 3) direction = bullish AND close > ST line (reclaimed)
 - **Path B — EMA Support:** Price near/below EMA 25/50/100/200 (support zone)
 - **StochRSI (14, 14, 3, 3):** %K crosses above %D on last candle, %K < 80 (not overbought)
-- All configured filter thresholds pass
+- **All configured filter thresholds pass — same `filterTrending()` applied to BOTH paths**
 
 ---
 
@@ -150,6 +152,7 @@ All thresholds are **configurable**. Token passes only when ALL configured thres
 | `TELEGRAM_SEND_ENABLED` | No | `false` | Set `true` to actually send |
 | `POLL_INTERVAL_MS` | No | `60000` | Scan interval in ms |
 | `FILTERS_CONFIG_PATH` | No | `./filters.config.json` | Path to filters config |
+| `HEARTBEAT_EVERY_N_CYCLES` | No | auto | Heartbeat every N cycles (1 if ≥5min interval, else 5) |
 
 ---
 
@@ -208,6 +211,35 @@ src/
 ├── config.ts              # Env + filters.config.json loader
 ├── types.ts               # TypeScript interfaces
 └── index.ts               # Entry point, startup validation
+```
+
+---
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Show bot info and available commands |
+| `/status` | Check bot status (interval, timeframes, mode) |
+| `/health` | Last scan time, cycle count, poll interval |
+| `/screening` | Trigger an immediate manual scan |
+| `/help` | Show bot help and current filter thresholds |
+
+## Heartbeat
+
+Bot sends a Telegram heartbeat message every N cycles (configurable via `HEARTBEAT_EVERY_N_CYCLES`).
+The default is every 1 cycle if `POLL_INTERVAL_MS ≥ 300000` (5 min), otherwise every 5 cycles.
+
+Normal heartbeat:
+```
+🔄 Cycle #12 selesai
+⏱ 8.4s | 🔍 3 signal, 6 pool dicek | 🔔 0 alert
+```
+
+Error heartbeat (sent when a scan cycle crashes):
+```
+❌ Cycle #12 error
+⚠️ <error message>
 ```
 
 ---

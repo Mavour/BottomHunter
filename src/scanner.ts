@@ -1,4 +1,4 @@
-import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource } from './types';
+import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource, ScanStats } from './types';
 import {
   getSignalBuys,
   getMarketKline,
@@ -12,7 +12,7 @@ import { discoverPools } from './adapters/meteora';
 import { calculateSuperTrend, validateSuperTrendSignal } from './indicators/supertrend';
 import { calculateStochRSI, validateStochRSISignal } from './indicators/stochrsi';
 import { calculateAllEMAs, validateEMASignal } from './indicators/ema';
-import { checkTokenAge, buildAlertFromTrending } from './filters';
+import { checkTokenAge, buildAlertFromTrending, filterTrending } from './filters';
 import { Alerter } from './alerter';
 
 // ─── Price change from klines ───────────────────────────────────────────────
@@ -162,7 +162,7 @@ async function checkIndicatorsMultiTF(
 
 // ─── Process signal stream (fast path) ──────────────────────────────────────
 
-async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<void> {
+async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { signalsChecked: number; alertsSent: number }): Promise<void> {
   console.log('[SCAN] Fetching smart money signals...');
   const signals = await getSignalBuys(50);
   console.log(`[SCAN] Got ${signals.length} signals`);
@@ -177,8 +177,10 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
       continue;
     }
 
+    stats.signalsChecked++;
+
     try {
-      // Skip kalo mcap/volume terlalu kecil — filter dulu sebelum API calls
+      // Skip kalo mcap terlalu kecil — filter dulu sebelum API calls
       if (sig.market_cap != null && sig.market_cap < cfg.filters.mcap_min) {
         continue;
       }
@@ -209,14 +211,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
       const priceChange5m = calcPriceChange(klines, 5);
       const priceChange1h = calcPriceChange(klines, 60);
 
-      // Basic safety check from security data
-      if (security) {
-        if (cfg.filters.rug_check.renounced_mint && !security.renounced_mint) continue;
-        if (cfg.filters.rug_check.renounced_freeze_account && !security.renounced_freeze_account) continue;
-        if (security.top_10_holder_rate > cfg.filters.top_10_holder_rate_max) continue;
-      }
-
-      // Synthesize a GmgnTrending-like object for multi-TF check
+      // Synthesize a GmgnTrending-like object for filter + multi-TF check
       const syntheticTrending: GmgnTrending = {
         address: mint,
         symbol: info?.symbol ?? mint.slice(0, 8),
@@ -249,6 +244,13 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
         rug_ratio: security?.rug_ratio ?? 0,
       };
 
+      // Full filter check (vol24h, liquidity, holders, rug, social, honeypot, dll.)
+      const filterResult = filterTrending(syntheticTrending, cfg.filters);
+      if (!filterResult.passed) {
+        console.log(`[SCAN] ${syntheticTrending.symbol} filtered: ${filterResult.reason}`);
+        continue;
+      }
+
       const vsAthPct = info?.ath_price && info?.price?.price
         ? (1 - info.price.price / info.ath_price) * 100
         : 0;
@@ -265,7 +267,8 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
       if (!check.passed) continue;
 
       setCooldown(mint, cfg.scan.cooldownMinutes);
-      await alerter.sendAlert(check.signal, 'signal');
+      const sent = await alerter.sendAlert(check.signal, 'signal');
+      if (sent) stats.alertsSent++;
     } catch (err) {
       if (err instanceof RateLimitError) {
         console.log(`[SCAN] Rate limited, waiting ${Math.round(err.waitMs / 1000)}s...`);
@@ -279,7 +282,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter): Promise<vo
 
 // ─── Process pools from Meteora (server-side filtered by mcap) ─────────────
 
-async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>): Promise<void> {
+async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: Set<string>, stats: { poolsChecked: number; alertsSent: number }): Promise<void> {
   console.log(`[SCAN] Fetching Meteora pools (mcap >= ${cfg.filters.mcap_min})...`);
 
   const maxMcap = cfg.filters.mcap_max > 0 ? cfg.filters.mcap_max : 100_000_000;
@@ -296,6 +299,31 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
     // Age check pake data Meteora (created_at), bukan GMGN
     if (pool.token_age_hours != null && pool.token_age_hours < cfg.scan.minAgeHours) {
       console.log(`[SCAN] ${symbol} age ${pool.token_age_hours}h < min ${cfg.scan.minAgeHours}h`);
+      continue;
+    }
+
+    stats.poolsChecked++;
+
+    // Build synthetic GmgnTrending untuk filter + indicator check
+    const trending: GmgnTrending = {
+      address: pool.base.mint, symbol, name: pool.name,
+      price: pool.price, price_change_5m: 0, price_change_1h: pool.price_change_pct, price_change_24h: 0,
+      market_cap: pool.mcap, liquidity: pool.active_tvl, volume_24h: pool.volume_window,
+      swaps: 0, holder_count: pool.holders,
+      top_10_holder_rate: 0, dev_team_hold_rate: 0,
+      suspected_insider_hold_rate: 0, rat_trader_amount_rate: 0, bundler_trader_amount_rate: 0,
+      smart_degen_count: 0, bot_degen_count: 0, renowned_count: 0, sniper_count: 0,
+      renounced_mint: true, renounced_freeze_account: true,
+      is_wash_trading: false, is_honeypot: false, has_at_least_one_social: false,
+      open_timestamp: 0, created_timestamp: 0, rug_ratio: 0,
+    };
+
+    seenMints.add(mintKey);
+
+    // Full filter check sebelum fee check & GMGN API call
+    const filterResult = filterTrending(trending, cfg.filters);
+    if (!filterResult.passed) {
+      console.log(`[SCAN] ${symbol} filtered: ${filterResult.reason}`);
       continue;
     }
 
@@ -317,22 +345,6 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
         tokenFeeSol = feeResult.feeSol;
       }
     }
-
-    // Build synthetic GmgnTrending
-    const trending: GmgnTrending = {
-      address: pool.base.mint, symbol, name: pool.name,
-      price: pool.price, price_change_5m: 0, price_change_1h: pool.price_change_pct, price_change_24h: 0,
-      market_cap: pool.mcap, liquidity: pool.active_tvl, volume_24h: pool.volume_window,
-      swaps: 0, holder_count: pool.holders,
-      top_10_holder_rate: 0, dev_team_hold_rate: 0,
-      suspected_insider_hold_rate: 0, rat_trader_amount_rate: 0, bundler_trader_amount_rate: 0,
-      smart_degen_count: 0, bot_degen_count: 0, renowned_count: 0, sniper_count: 0,
-      renounced_mint: true, renounced_freeze_account: true,
-      is_wash_trading: false, is_honeypot: false, has_at_least_one_social: false,
-      open_timestamp: 0, created_timestamp: 0, rug_ratio: 0,
-    };
-
-    seenMints.add(mintKey);
 
     // Coba enrich GMGN — kalo gagal (403) proceed dengan Meteora data aja
     let info: GmgnTokenInfo | null = null;
@@ -364,7 +376,8 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
           continue;
         }
         setCooldown(trending.address, cfg.scan.cooldownMinutes);
-        await alerter.sendAlert(check.signal, 'trending');
+        const sent = await alerter.sendAlert(check.signal, 'trending');
+        if (sent) stats.alertsSent++;
         continue;
       } catch (err) {
         console.error(`[SCAN] Error checking ${symbol}:`, err);
@@ -376,21 +389,32 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
   }
 }
 
+// ─── Cycle counter ───────────────────────────────────────────────────────────
+
+let scanCycleCount = 0;
+
 // ─── Main scan loop ─────────────────────────────────────────────────────────
 
-export async function runScan(cfg: AppConfig, alerter: Alerter): Promise<void> {
+export async function runScan(cfg: AppConfig, alerter: Alerter): Promise<ScanStats> {
+  scanCycleCount++;
+  const cycleStart = Date.now();
+  console.log(`[SCAN] === Cycle #${scanCycleCount} started at ${new Date().toISOString()} ===`);
+
   setConcurrencyLimit(10);
   const seenMints = new Set<string>();
 
-  console.log('[SCAN] === Starting scan cycle ===');
+  const stats = { signalsChecked: 0, poolsChecked: 0, alertsSent: 0 };
 
   // Fast path: smart money signals first
-  await processSignalStream(cfg, alerter);
+  await processSignalStream(cfg, alerter, stats);
 
   // Meteora path: server-side mcap filter, cuma dapet pool berkualitas
-  await processMeteoraPools(cfg, alerter, seenMints);
+  await processMeteoraPools(cfg, alerter, seenMints, stats);
 
-  console.log('[SCAN] === Scan cycle complete ===');
+  const durationMs = Date.now() - cycleStart;
+  console.log(`[SCAN] === Cycle #${scanCycleCount} complete (${durationMs}ms, ${stats.signalsChecked} signals, ${stats.poolsChecked} pools, ${stats.alertsSent} alerts) ===`);
+
+  return { cycle: scanCycleCount, ...stats, durationMs };
 }
 
 export default { runScan };
