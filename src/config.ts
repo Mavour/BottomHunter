@@ -36,7 +36,7 @@ const DEFAULT_FILTERS: FilterConfig = {
   top_10_holder_rate_max: 60,
   vol24h_min: 500000,
   mcap_min: 350000,
-  mcap_max: 0,
+  mcap_max: 30_000_000,
   min_liquidity_usd: 5000,
   min_holders: 0,
   min_fee_sol: 30,

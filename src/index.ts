@@ -89,6 +89,11 @@ async function executeScan(): Promise<void> {
         error: errMsg,
       });
     }
+  } finally {
+    if (!shuttingDown) {
+      const nextTime = new Date(Date.now() + config.pollIntervalMs).toLocaleTimeString();
+      console.log(`[MAIN] Next scan scheduled at ${nextTime}`);
+    }
   }
 }
 
@@ -105,9 +110,11 @@ async function main(): Promise<void> {
 
   console.log(`[MAIN] Poll interval confirmed: ${config.pollIntervalMs}ms (${config.pollIntervalMs / 60000} minutes)`);
   console.log(`[MAIN] Heartbeat every: ${config.heartbeatEveryNCycles} cycle(s)`);
+  console.log(`[MAIN] Mcap range: $${config.filters.mcap_min.toLocaleString()} — $${config.filters.mcap_max.toLocaleString()}`);
   console.log(`[MAIN] Telegram send: ${config.telegramSendEnabled ? 'ENABLED' : 'DRY-RUN'}`);
   console.log(`[MAIN] SuperTrend: period=${config.supertrend.period}, multiplier=${config.supertrend.multiplier}`);
   console.log(`[MAIN] StochRSI: k=${config.stochrsi.kPeriod}, d=${config.stochrsi.dPeriod}, smoothK=${config.stochrsi.smoothK}`);
+  console.log(`[MAIN] Initial scan runs immediately on startup, subsequent scans are scheduled every ${config.pollIntervalMs / 60000} minutes AFTER previous scan completes (not wall-clock aligned).`);
 
   // Validate startup
   if (!(await validateStartup())) {

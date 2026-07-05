@@ -74,7 +74,9 @@ export async function discoverPools(minMcap: number, maxMcap = 100_000_000, page
     'quote_token_organic_score>=60',
   ].join('&&');
 
-  const url = `${POOL_DISCOVERY_BASE}/pools?page_size=${pageSize}&filter_by=${encodeURIComponent(filters)}&timeframe=5m&category=trending`;
+  // timeframe=24h — Pool Discovery API mengembalikan volume dalam window 24 jam,
+  // sehingga field volume_window benar-benar representasi volume 24h (bukan 5m).
+  const url = `${POOL_DISCOVERY_BASE}/pools?page_size=${pageSize}&filter_by=${encodeURIComponent(filters)}&timeframe=24h&category=trending`;
 
   let res: Response;
   try {

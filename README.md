@@ -14,7 +14,7 @@ Every 60s:
      → filterTrending() (vol24h, liq, holders, rug, social, honeypot)
      → if passed: fee check → enrich → indicators → alert
 
-  2. Fetch Meteora DLMM pools (server-side mcap filter)
+  2. Fetch Meteora DLMM pools (server-side mcap filter, 24h volume window)
      → age check → filterTrending() (same filter as signals)
      → if passed: fee check → enrich → indicators → alert
 ```
@@ -130,9 +130,9 @@ All thresholds are **configurable**. Token passes only when ALL configured thres
 | `rug_check.renounced_mint` | bool | `true` | Require mint authority renounced |
 | `rug_check.renounced_freeze_account` | bool | `true` | Require freeze authority renounced |
 | `top_10_holder_rate_max` | % | `60` | Max concentration in top 10 holders |
-| `vol24h_min` | USD | `500000` | Min 24h volume |
+| `vol24h_min` | USD | `500000` | Min 24h volume (Meteora pool uses 24h API window) |
 | `mcap_min` | USD | `350000` | Min market cap |
-| `mcap_max` | USD | `0` | Max market cap (0 = no limit) |
+| `mcap_max` | USD | `30000000` | Max market cap (30M; 0 = no limit) |
 | `min_liquidity_usd` | USD | `5000` | Min liquidity |
 | `min_holders` | count | `0` | Min holder count |
 | `min_fee_sol` | SOL | `30` | Min fee in SOL |
