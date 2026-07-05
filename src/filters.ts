@@ -1,4 +1,4 @@
-import { FilterConfig, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, VolumeSource } from './types';
+import { FilterConfig, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, DataSource } from './types';
 
 /**
  * Sum USD volume from kline candles within maxAgeMs (default 24h).
@@ -116,7 +116,8 @@ export function buildAlertFromTrending(
   ema?: { ema25: number; ema50: number; ema100: number; ema200: number; nearEmaLevel: { period: number; value: number } | null; supportZone: boolean },
   emaTriggered?: boolean,
   feeSol?: number,
-  volumeSource: VolumeSource = 'dexscreener',
+  volumeSource: DataSource = 'dexscreener',
+  liquiditySource: DataSource = 'dexscreener',
 ): AlertSignal {
   const currentPrice = info?.price?.price ?? t.price;
   const athPrice = info?.ath_price ?? 0;
@@ -135,6 +136,7 @@ export function buildAlertFromTrending(
     volume24h: t.volume_24h,
     volumeSource,
     liquidity: t.liquidity,
+    liquiditySource,
     holders: t.holder_count,
     priceChange5m,
     priceChange1h,

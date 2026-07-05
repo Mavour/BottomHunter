@@ -188,7 +188,7 @@ export interface ScanStats {
 // ─── Alert Signal ──────────────────────────────────────────────────────────
 
 export type SignalSource = 'signal' | 'trending';
-export type VolumeSource = 'dexscreener' | 'meteora_estimate';
+export type DataSource = 'dexscreener' | 'meteora_estimate';
 
 export interface AlertSignal {
   mint: string;
@@ -196,8 +196,9 @@ export interface AlertSignal {
   name?: string;
   marketCap: number;
   volume24h: number;
-  volumeSource: VolumeSource;
+  volumeSource: DataSource;
   liquidity: number;
+  liquiditySource: DataSource;
   holders: number;
   priceChange5m: number;
   priceChange1h: number;

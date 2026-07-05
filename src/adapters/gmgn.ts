@@ -354,6 +354,7 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
   await acquireSlot();
   try {
     const raw = execGmgn(['token', 'info', '--chain', 'sol', '--address', mint, '--raw']);
+    recordGmgnResult(true);
     const data = parseJson<{ data?: any }>(raw, 'token info');
     const info = data?.data;
     if (info) {
@@ -380,6 +381,7 @@ export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | 
       }
     }
   } catch (e) {
+    recordGmgnResult(false);
     // CLI gagal, lanjut ke REST API
   } finally {
     releaseSlot();
@@ -463,7 +465,7 @@ interface GmgnHealth {
 }
 
 const CIRCUIT_THRESHOLD = 3;
-const CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+const CIRCUIT_COOLDOWN_MS = 60 * 60 * 1000; // 1 jam sesuai keputusan
 
 const gmgnHealth: GmgnHealth = { consecutiveFailures: 0, circuitOpenUntil: 0 };
 
@@ -487,7 +489,8 @@ export function recordGmgnResult(success: boolean): void {
     gmgnHealth.consecutiveFailures++;
     if (gmgnHealth.consecutiveFailures >= CIRCUIT_THRESHOLD) {
       gmgnHealth.circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
-      console.log(`[GMGN] Circuit OPEN after ${gmgnHealth.consecutiveFailures} consecutive failures (cooldown ${CIRCUIT_COOLDOWN_MS / 60000}min)`);
+      const untilStr = new Date(gmgnHealth.circuitOpenUntil).toISOString();
+      console.log(`[GMGN] Circuit OPEN setelah ${gmgnHealth.consecutiveFailures} gagal berturut-turut — lock sampai ${untilStr} (${CIRCUIT_COOLDOWN_MS / 60000}min)`);
     }
   }
 }

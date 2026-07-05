@@ -1,13 +1,15 @@
 import { cacheGet, cacheSet } from '../cache';
 
-// vol24h dari DexScreener — field Meteora terbukti salah label, lihat: CHANCE $5356 vs real $1.8M
+// DexScreener sumber UTAMA vol24h DAN liquidity — field Meteora terbukti salah label
+// lihat: CHANCE vol $5356 vs real $1.8M, liq $17 vs real $225.5K
 const DEXSCREENER_API = 'https://api.dexscreener.com/latest/dex/tokens';
 
-export async function getTokenVolume24h(mint: string): Promise<number | null> {
-  const cacheKey = `dexscreener:vol24h:${mint}`;
-  const cached = cacheGet<number>(cacheKey);
-  if (cached !== null) return cached;
+interface DexScreenerMarketData {
+  volume24h: number;
+  liquidityUsd: number;
+}
 
+async function fetchMarketData(mint: string): Promise<DexScreenerMarketData | null> {
   const url = `${DEXSCREENER_API}/${mint}`;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -39,12 +41,27 @@ export async function getTokenVolume24h(mint: string): Promise<number | null> {
         }
       }
 
-      if (bestVol > 0) cacheSet(cacheKey, bestVol, 60_000);
-      return bestVol > 0 ? bestVol : null;
+      if (bestLiq <= 0 && bestVol <= 0) return null;
+      return { volume24h: bestVol, liquidityUsd: bestLiq };
     } catch {
       return null;
     }
   }
 
   return null;
+}
+
+export async function getDexScreenerMarketData(mint: string): Promise<DexScreenerMarketData | null> {
+  const cacheKey = `dexscreener:market:${mint}`;
+  const cached = cacheGet<DexScreenerMarketData>(cacheKey);
+  if (cached !== null) return cached;
+
+  const result = await fetchMarketData(mint);
+  if (result !== null) cacheSet(cacheKey, result, 60_000);
+  return result;
+}
+
+export async function getTokenVolume24h(mint: string): Promise<number | null> {
+  const data = await getDexScreenerMarketData(mint);
+  return data?.volume24h ?? null;
 }

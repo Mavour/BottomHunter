@@ -1,4 +1,4 @@
-import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource, ScanStats, VolumeSource } from './types';
+import { AppConfig, GmgnSignal, GmgnTrending, GmgnKline, GmgnTokenInfo, GmgnTokenSecurity, AlertSignal, SignalSource, ScanStats, DataSource } from './types';
 import {
   getSignalBuys,
   getMarketKline,
@@ -10,7 +10,7 @@ import {
   isGmgnCircuitOpen,
 } from './adapters/gmgn';
 import { discoverPools } from './adapters/meteora';
-import { getTokenVolume24h } from './adapters/dexscreener';
+import { getDexScreenerMarketData, getTokenVolume24h } from './adapters/dexscreener';
 import { calculateSuperTrend, validateSuperTrendSignal } from './indicators/supertrend';
 import { calculateStochRSI, validateStochRSISignal } from './indicators/stochrsi';
 import { calculateAllEMAs, validateEMASignal } from './indicators/ema';
@@ -102,7 +102,8 @@ async function checkIndicatorsMultiTF(
   trendingData: { symbol: string; trending: GmgnTrending; info: GmgnTokenInfo | null; security: GmgnTokenSecurity | null; priceChange5m: number; priceChange1h: number; vsAthPct: number },
   cfg: AppConfig,
   feeSol?: number,
-  volumeSource: VolumeSource = 'dexscreener',
+  volumeSource: DataSource = 'dexscreener',
+  liquiditySource: DataSource = 'dexscreener',
 ): Promise<IndicatorCheck> {
   // Try each timeframe until one passes
   for (const tf of TIMEFRAMES) {
@@ -154,6 +155,7 @@ async function checkIndicatorsMultiTF(
       emaValid,
       feeSol,
       volumeSource,
+      liquiditySource,
     );
 
     alertSignal.timeframe = tf;
@@ -223,12 +225,13 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
       const priceChange5m = calcPriceChange(klines, 5);
       const priceChange1h = calcPriceChange(klines, 60);
 
-      // vol24h dari DexScreener (sumber utama), bukan GMGN/Meteora
-      const dexVol = await getTokenVolume24h(mint);
-      let volumeSource: VolumeSource = 'dexscreener';
-      const signalVol = dexVol ?? 0;
-      if (dexVol === null) {
-        volumeSource = 'meteora_estimate';
+      // DexScreener sumber UTAMA vol24h DAN liquidity
+      const dexData = await getDexScreenerMarketData(mint);
+      let dataSource: DataSource = 'dexscreener';
+      const signalVol = dexData?.volume24h ?? 0;
+      const signalLiq = dexData?.liquidityUsd ?? 0;
+      if (dexData === null) {
+        dataSource = 'meteora_estimate';
       }
 
       // Synthesize a GmgnTrending-like object for filter + multi-TF check
@@ -241,7 +244,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         price_change_1h: priceChange1h,
         price_change_24h: 0,
         market_cap: sig.market_cap,
-        liquidity: info?.liquidity ?? 0,
+        liquidity: signalLiq,
         volume_24h: signalVol,
         swaps: 0,
         holder_count: info?.holder_count ?? 0,
@@ -283,7 +286,7 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         priceChange5m,
         priceChange1h,
         vsAthPct,
-      }, cfg, tokenFeeSol, volumeSource);
+      }, cfg, tokenFeeSol, dataSource, dataSource);
       if (!check.passed) continue;
 
       setCooldown(mint, cfg.scan.cooldownMinutes);
@@ -324,21 +327,29 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
 
     stats.poolsChecked++;
 
-    // vol24h dari DexScreener — field Meteora terbukti salah label, lihat: CHANCE $5356 vs real $1.8M
-    const dexVol = await getTokenVolume24h(pool.base.mint);
-    let volumeSource: VolumeSource = 'dexscreener';
+    // DexScreener sumber UTAMA vol24h DAN liquidity — field Meteora terbukti salah label
+    // lihat: CHANCE vol $5356 vs real $1.8M, liq $17 vs real $225.5K
+    const dexData = await getDexScreenerMarketData(pool.base.mint);
+    let dataSource: DataSource = 'dexscreener';
     let vol24h: number;
+    let liqUsd: number;
 
-    if (dexVol !== null) {
-      vol24h = dexVol;
+    if (dexData !== null) {
+      vol24h = dexData.volume24h;
+      liqUsd = dexData.liquidityUsd;
     } else {
-      console.log(`[SCAN] ${symbol} DexScreener volume unavailable, using Meteora estimate (unverified)`);
+      console.log(`[SCAN] ${symbol} DexScreener data unavailable, using Meteora estimate (unverified)`);
       vol24h = pool.volume_window;
-      volumeSource = 'meteora_estimate';
+      liqUsd = pool.active_tvl;
+      dataSource = 'meteora_estimate';
     }
 
     if (vol24h < cfg.filters.vol24h_min) {
-      console.log(`[SCAN] ${symbol} vol24h $${vol24h.toFixed(0)} < min $${cfg.filters.vol24h_min} (${volumeSource})`);
+      console.log(`[SCAN] ${symbol} vol24h $${vol24h.toFixed(0)} < min $${cfg.filters.vol24h_min} (${dataSource})`);
+      continue;
+    }
+    if (liqUsd < cfg.filters.min_liquidity_usd) {
+      console.log(`[SCAN] ${symbol} liq $${liqUsd.toFixed(0)} < min $${cfg.filters.min_liquidity_usd} (${dataSource})`);
       continue;
     }
 
@@ -346,7 +357,7 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
     const trending: GmgnTrending = {
       address: pool.base.mint, symbol, name: pool.name,
       price: pool.price, price_change_5m: 0, price_change_1h: pool.price_change_pct, price_change_24h: 0,
-      market_cap: pool.mcap, liquidity: pool.active_tvl, volume_24h: vol24h,
+      market_cap: pool.mcap, liquidity: liqUsd, volume_24h: vol24h,
       swaps: 0, holder_count: pool.holders,
       top_10_holder_rate: 0, dev_team_hold_rate: 0,
       suspected_insider_hold_rate: 0, rat_trader_amount_rate: 0, bundler_trader_amount_rate: 0,
@@ -416,7 +427,7 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
       const check = await checkIndicatorsMultiTF(pool.base.mint, {
           symbol, trending, info, security,
           priceChange5m, priceChange1h, vsAthPct,
-        }, cfg, tokenFeeSol, volumeSource);
+        }, cfg, tokenFeeSol, dataSource, dataSource);
         if (!check.passed) {
           console.log(`[SCAN] ${symbol} indicator check: ${check.reason}`);
           continue;

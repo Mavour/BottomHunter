@@ -40,6 +40,7 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
   const tfLabel = signal.timeframe || '5m';
 
   const volSourceLabel = signal.volumeSource === 'dexscreener' ? '✅ (DexScreener)' : '⚠️ (estimasi)';
+  const liqSourceLabel = signal.liquiditySource === 'dexscreener' ? '✅ (DexScreener)' : '⚠️ (estimasi)';
 
   const lines = [
     title,
@@ -52,7 +53,7 @@ export function buildAlertMessage(signal: AlertSignal, source: SignalSource): st
     `│ CA: \`${signal.mint}\``,
     `│ 💰 MCap: *$${fmtNum(signal.marketCap)}*`,
     `│ 📈 Vol 24h: *$${fmtNum(signal.volume24h)}* ${volSourceLabel}`,
-    `│ 💧 Liquidity: *$${fmtNum(signal.liquidity)}*`,
+    `│ 💧 Liquidity: *$${fmtNum(signal.liquidity)}* ${liqSourceLabel}`,
     `│ 👥 Holders: *${signal.holders.toLocaleString()}*`,
     `│ 💰 Fee: *${signal.feeSol.toFixed(2)} SOL*`,
     `╰──────────────────────────────────────╯`,

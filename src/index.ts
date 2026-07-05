@@ -125,6 +125,8 @@ async function executeScan(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const processStartMs = Date.now();
+  console.log('[MAIN] Process started at', new Date().toISOString());
   printBanner();
 
   // Load config (throws if missing required vars)
@@ -169,6 +171,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   // Run first scan immediately
+  console.log(`[MAIN] Reached initial scan after ${Date.now() - processStartMs}ms of startup validation`);
   console.log('[MAIN] Running initial scan...');
   await executeScan();
 
