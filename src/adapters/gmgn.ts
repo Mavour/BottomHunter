@@ -90,12 +90,23 @@ export function closedCandlesOnly(klines: GmgnKline[], resolution: string, now =
 
 const CLI_TIMEOUT_MS = 30_000;
 
+/**
+ * Resolve the gmgn-cli executable. On Windows, `execFileSync` won't find
+ * `gmgn-cli` unless the `.cmd` extension is used (npm shims ship as .cmd).
+ * Without this, startup validation fails with "gmgn-cli not found" even though
+ * `which gmgn-cli` succeeds in the shell.
+ */
+function gmgnCommand(): string {
+  return process.platform === 'win32' ? 'gmgn-cli.cmd' : 'gmgn-cli';
+}
+
 function execGmgn(args: string[]): string {
   try {
-    const result = execFileSync('gmgn-cli', args, {
+    const result = execFileSync(gmgnCommand(), args, {
       timeout: CLI_TIMEOUT_MS,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32', // required for .cmd resolution on Windows
       env: { ...process.env, GMGN_API_KEY: process.env.GMGN_API_KEY || '' },
     });
     return result.trim();
@@ -123,24 +134,39 @@ class RateLimitError extends Error {
 
 const MIN_REQUEST_GAP_MS = 750;
 let lastRequestTime = 0;
-let requestChain = Promise.resolve();
 
-async function acquireSlot(): Promise<void> {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < MIN_REQUEST_GAP_MS) {
-    const waitMs = MIN_REQUEST_GAP_MS - elapsed;
-    await new Promise((r) => setTimeout(r, waitMs));
-  }
-  lastRequestTime = Date.now();
+/**
+ * Promise chain guarantees every GMGN CLI call is serialized with at least
+ * MIN_REQUEST_GAP_MS between consecutive calls — even when callers fire
+ * requests concurrently (e.g. via Promise.all). Each acquireSlot() resolves
+ * only after the previous request released its slot, then enforces the gap.
+ *
+ * Previously this used a read-then-write of lastRequestTime without a lock,
+ * so concurrent Promise.all callers raced past the gap and tripped rate limits.
+ */
+let requestChain: Promise<void> = Promise.resolve();
+
+function acquireSlot(): Promise<void> {
+  const next = requestChain.then(async () => {
+    const elapsed = Date.now() - lastRequestTime;
+    if (elapsed < MIN_REQUEST_GAP_MS) {
+      await new Promise((r) => setTimeout(r, MIN_REQUEST_GAP_MS - elapsed));
+    }
+    lastRequestTime = Date.now();
+  });
+  // Chain subsequent acquires behind this one so they queue up.
+  requestChain = next.catch(() => {});
+  return next;
 }
 
 function releaseSlot(): void {
-  // No-op under serial queue — gap is enforced pre-request
+  // No-op under serial queue — gap is enforced pre-request in acquireSlot()
 }
 
 export function setConcurrencyLimit(_n: number): void {
-  // Ignored — bravonoid pattern uses serial queue with min gap
+  // No-op: requests are serialized via acquireSlot() with a 750ms gap.
+  // Kept for API compatibility with scanner.ts. Concurrent requests are NOT
+  // parallelized — this is intentional to respect GMGN's rate limits.
 }
 
 // ─── JSON parser helper ─────────────────────────────────────────────────────
@@ -289,15 +315,27 @@ export async function getTokenSecurity(mint: string): Promise<GmgnTokenSecurity 
 
 /**
  * Fetch smart money buy signals (signal_type 12 = smart degen buy).
- * GMGN CLI: gmgn-cli market signal --chain sol --signal-type 12 --raw
+ * GMGN CLI: gmgn-cli market signal --chain sol --signal-type 12 --limit N --raw
+ *
+ * The `limit` is now forwarded to the CLI. If the CLI version in use does not
+ * support the --limit flag for the signal subcommand, it is ignored server-side
+ * and the full list is returned — we still slice defensively so callers always
+ * receive at most `limit` entries.
  */
 export async function getSignalBuys(limit = 50): Promise<GmgnSignal[]> {
   await acquireSlot();
   try {
-    const raw = execGmgn(['market', 'signal', '--chain', 'sol', '--signal-type', '12', '--raw']);
+    const raw = execGmgn([
+      'market', 'signal',
+      '--chain', 'sol',
+      '--signal-type', '12',
+      '--limit', String(limit),
+      '--raw',
+    ]);
     const data = parseJson<{ data?: GmgnSignal[] }>(raw, 'signal');
     recordGmgnResult(true);
-    return data.data ?? [];
+    const signals = data.data ?? [];
+    return signals.length > limit ? signals.slice(0, limit) : signals;
   } catch {
     recordGmgnResult(false);
     return [];
@@ -341,50 +379,74 @@ export async function getTrending(minCreatedHours = 3, limit = 100): Promise<Gmg
  * Fetch token fee in SOL langsung dari GMGN REST API.
  * Mengikuti pola dari bravonoid: cari pool_fees_sol di pool data,
  * fallback ke total_fees_sol di token level.
- * 
+ *
  * GMGN API: GET /v1/token/info?chain=sol&address=<mint>
  * Requires GMGN_API_KEY env var.
+ *
+ * `cachedInfo` (optional): jika caller sudah memanggil getTokenInfo() dan punya
+ * objek info GMGN, pass di sini supaya tidak ada panggilan `gmgn-cli token info`
+ * kedua (sebelumnya fee check selalu re-fetch data yang sama — lihat bug A4).
  */
-export async function getTokenFeesSol(mint: string): Promise<{ feeSol: number | null; source: string | null }> {
+export async function getTokenFeesSol(
+  mint: string,
+  cachedInfo?: any | null
+): Promise<{ feeSol: number | null; source: string | null }> {
   const cacheKey = `token:fees:${mint}`;
   const cached = cacheGet<{ feeSol: number | null; source: string | null }>(cacheKey);
   if (cached !== null) return cached;
 
-  // Priority 1: ambil fee dari GMGN CLI (sama kaya getTokenInfo)
-  await acquireSlot();
-  try {
-    const raw = execGmgn(['token', 'info', '--chain', 'sol', '--address', mint, '--raw']);
-    recordGmgnResult(true);
-    const data = parseJson<{ data?: any }>(raw, 'token info');
-    const info = data?.data;
-    if (info) {
-      // Debug: log available keys untuk 1 token pertama
-      if (process.env.DEBUG_FEE) {
-        console.log(`[FEE] CLI keys for ${mint.slice(0,8)}:`, Object.keys(info).join(','));
-      }
-      const feeInfo = extractFeeInfo(info);
-      if (feeInfo.feeSol != null) {
-        cacheSet(cacheKey, feeInfo, 300_000);
-        releaseSlot();
-        return feeInfo;
-      }
-      // Cek pools array
-      if (Array.isArray(info?.pools)) {
-        for (const pool of info.pools) {
-          const pf = extractFeeInfo(pool);
-          if (pf.feeSol != null) {
-            cacheSet(cacheKey, pf, 300_000);
-            releaseSlot();
-            return pf;
-          }
+  // Priority 1a: reuse objek info yang sudah di-fetch caller (hindari double call)
+  if (cachedInfo) {
+    const feeInfo = extractFeeInfo(cachedInfo);
+    if (feeInfo.feeSol != null) {
+      cacheSet(cacheKey, feeInfo, 300_000);
+      return feeInfo;
+    }
+    if (Array.isArray(cachedInfo?.pools)) {
+      for (const pool of cachedInfo.pools) {
+        const pf = extractFeeInfo(pool);
+        if (pf.feeSol != null) {
+          cacheSet(cacheKey, pf, 300_000);
+          return pf;
         }
       }
     }
-  } catch (e) {
-    recordGmgnResult(false);
-    // CLI gagal, lanjut ke REST API
-  } finally {
-    releaseSlot();
+    // cachedInfo ada tapi tidak ada fee — lanjut ke REST fallback (jangan re-call CLI)
+  } else {
+    // Priority 1b: ambil fee dari GMGN CLI (hanya kalau caller tidak supplai info)
+    await acquireSlot();
+    try {
+      const raw = execGmgn(['token', 'info', '--chain', 'sol', '--address', mint, '--raw']);
+      recordGmgnResult(true);
+      const data = parseJson<{ data?: any }>(raw, 'token info');
+      const info = data?.data;
+      if (info) {
+        if (process.env.DEBUG_FEE) {
+          console.log(`[FEE] CLI keys for ${mint.slice(0, 8)}:`, Object.keys(info).join(','));
+        }
+        const feeInfo = extractFeeInfo(info);
+        if (feeInfo.feeSol != null) {
+          cacheSet(cacheKey, feeInfo, 300_000);
+          releaseSlot();
+          return feeInfo;
+        }
+        if (Array.isArray(info?.pools)) {
+          for (const pool of info.pools) {
+            const pf = extractFeeInfo(pool);
+            if (pf.feeSol != null) {
+              cacheSet(cacheKey, pf, 300_000);
+              releaseSlot();
+              return pf;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      recordGmgnResult(false);
+      // CLI gagal, lanjut ke REST API
+    } finally {
+      releaseSlot();
+    }
   }
 
   // Priority 2: REST API fallback (browser-like headers)

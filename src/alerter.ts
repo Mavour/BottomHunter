@@ -19,14 +19,23 @@ function fmtBool(v: boolean): string {
   return v ? 'yes' : 'no';
 }
 
+/**
+ * Escape special MarkdownV1 characters so user-controlled strings (token symbol/name)
+ * don't break Telegram's parse_mode. Meme coins often contain *, _, [, etc.
+ */
+function escapeMd(text: string): string {
+  return String(text).replace(/([_*`\[\]])/g, '\\$1');
+}
+
 // ─── Message builder ────────────────────────────────────────────────────────
 
 export function buildAlertMessage(signal: AlertSignal, source: SignalSource): string {
   // Determine which indicator triggered
   const triggeredBy = signal.ema.triggered ? 'EMA' : 'SuperTrend';
+  const safeSymbol = escapeMd(signal.symbol);
 
   // Build the alert title based on trigger
-  let title = `🟢 *SUPPORT AREA* — *$${signal.symbol}*`;
+  let title = `🟢 *SUPPORT AREA* — *$${safeSymbol}*`;
 
   // Build indicator status line
   let indicatorLine = '';
@@ -260,6 +269,7 @@ export class Alerter {
 
   async sendHeartbeat(stats: ScanStats): Promise<boolean> {
     const duration = (stats.durationMs / 1000).toFixed(1);
+    const skippedPart = stats.circuitSkipped ? ` | ⏭ ${stats.circuitSkipped} skip` : '';
     let msg: string;
     if (stats.error) {
       msg = [
@@ -271,7 +281,7 @@ export class Alerter {
       msg = [
         `🔄 *Cycle #${stats.cycle} selesai*`,
         ``,
-        `⏱ ${duration}s | 🔍 ${stats.signalsChecked} signal, ${stats.poolsChecked} pool dicek | 🔔 ${stats.alertsSent} alert`,
+        `⏱ ${duration}s | 🔍 ${stats.signalsChecked} signal, ${stats.poolsChecked} pool dicek | 🔔 ${stats.alertsSent} alert${skippedPart}`,
       ].join('\n');
     }
 

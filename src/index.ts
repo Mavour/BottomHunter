@@ -21,6 +21,7 @@ let shuttingDown = false;
 let isScanInProgress = false;
 let consecutiveScanFailures = 0;
 let scannerDownAlerted = false;
+let lastEscalationAlertAt = 0; // B6: track when escalation was last sent
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -97,10 +98,15 @@ async function executeScan(): Promise<void> {
     consecutiveScanFailures++;
     alerter.setConsecutiveScanFailures(consecutiveScanFailures);
 
-    // Escalation alert — 3 consecutive failures
-    if (consecutiveScanFailures >= 3 && !scannerDownAlerted) {
-      scannerDownAlerted = true;
-      await alerter.sendMessage('⚠️ *Scanner Down*\n\nBot gagal scan 3x berturut. Cek log VPS.\n_Coba /screening manual untuk test._').catch(() => {});
+    // Escalation alert — 3 consecutive failures, re-alert every 10 minutes (B6)
+    const escalationCooldownMs = 10 * 60 * 1000;
+    const now = Date.now();
+    if (consecutiveScanFailures >= 3) {
+      if (!scannerDownAlerted || (now - lastEscalationAlertAt) > escalationCooldownMs) {
+        scannerDownAlerted = true;
+        lastEscalationAlertAt = now;
+        await alerter.sendMessage('⚠️ *Scanner Down*\n\nBot gagal scan 3x berturut. Cek log VPS.\n_Coba /screening manual untuk test._').catch(() => {});
+      }
     }
 
     const cycle = alerter.getScanCycleCount() + 1;
@@ -153,9 +159,19 @@ async function main(): Promise<void> {
   // Init alerter
   alerter = new Alerter(config.telegramBotToken, config.telegramChatId, config.telegramSendEnabled, config.pollIntervalMs);
 
-  // Start bot to listen for commands
-  alerter.onScanRequest(() => executeScan());
-  await alerter.startBot();
+  // Start bot to listen for commands (fire-and-forget — Telegraf.launch() is long-polling
+  // and never resolves; it MUST NOT be awaited or the main flow deadlocks here).
+  // B4: /screening handler cek overlap guard — mencegah scan paralel
+  alerter.onScanRequest(async () => {
+    if (isScanInProgress) {
+      await alerter.sendMessage('⏳ Scan sedang berjalan, tunggu selesai dulu.');
+      return;
+    }
+    await executeScan();
+  });
+  alerter.startBot().catch((err) => {
+    console.error('[MAIN] Bot start failed:', err);
+  });
 
   // Send startup notification
   console.log('[MAIN] Sending startup notification...');
@@ -169,6 +185,18 @@ async function main(): Promise<void> {
   // Register shutdown handlers
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // C2: Reset overlap guard on unhandled exceptions so a restart recovers cleanly.
+  // Without this, if the process crashes inside executeScan() before reaching finally{},
+  // isScanInProgress stays true and all subsequent scans are skipped.
+  process.on('uncaughtException', (err) => {
+    console.error('[MAIN] Uncaught exception:', err);
+    isScanInProgress = false;
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[MAIN] Unhandled rejection:', reason);
+    isScanInProgress = false;
+  });
 
   // Run first scan immediately
   console.log(`[MAIN] Reached initial scan after ${Date.now() - processStartMs}ms of startup validation`);

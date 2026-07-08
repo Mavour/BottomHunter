@@ -39,10 +39,15 @@ export function checkTokenAge(
  * Apply filters to a trending token.
  * Returns { passed: false, reason: '...' } on first failure.
  * Returns { passed: true } when all configured thresholds pass.
+ *
+ * `vsAthPct` (optional): distance below ATH as a percentage (0 = at ATH).
+ * Only enforced when a non-null value is supplied — callers that haven't
+ * enriched ATH data yet should omit it so the filter is not applied prematurely.
  */
 export function filterTrending(
   t: GmgnTrending,
-  cfg: FilterConfig
+  cfg: FilterConfig,
+  vsAthPct?: number
 ): { passed: boolean; reason: string } {
   // Rug checks
   if (cfg.rug_check.renounced_mint && !t.renounced_mint) {
@@ -72,6 +77,16 @@ export function filterTrending(
   }
   if (t.holder_count < cfg.min_holders) {
     return { passed: false, reason: `holders ${t.holder_count} < min ${cfg.min_holders}` };
+  }
+
+  // vsATH — only enforce when caller supplied the value (ATH data available).
+  if (vsAthPct !== undefined) {
+    if (cfg.vs_ath_pct_max > 0 && vsAthPct > cfg.vs_ath_pct_max) {
+      return { passed: false, reason: `vsATH -${vsAthPct.toFixed(1)}% < max -${cfg.vs_ath_pct_max}% (too far from ATH)` };
+    }
+    if (cfg.vs_ath_pct_min > 0 && vsAthPct < cfg.vs_ath_pct_min) {
+      return { passed: false, reason: `vsATH -${vsAthPct.toFixed(1)}% > min -${cfg.vs_ath_pct_min}% (too close to ATH)` };
+    }
   }
 
   // Fee/tax check dari security data (buy_tax/sell_tax) dilakukan di enrichment phase

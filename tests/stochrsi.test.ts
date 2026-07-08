@@ -14,14 +14,17 @@ function klines(closes: number[]): GmgnKline[] {
 
 describe('StochRSI (14, 14, 3, 3)', () => {
   it('should detect bullish cross: %K crosses above %D', () => {
-    // %K below %D then crosses above at last candle
+    // A ~60-candle series whose RSI dips then recovers enough for %K to cross
+    // above %D on the last candle without going overbought. (StochRSI needs
+    // rsiPeriod + kPeriod + dPeriod + smoothK worth of candles to stabilise,
+    // so the short synthetic series used originally never produced a real cross.)
     const closes = [
-      // First 14 candles: steady drop (RSI near 20)
-      100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88, 87,
-      // Recovery: RSI rises, %K crosses above %D
-      88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110, 112, 114,
-      // Cross happens here: %K=65, %D=60 → %K=68, %D=62
-      116, 118,
+      100.33, 98.07, 100.47, 102.97, 101.92, 99.98, 99.32, 100.81, 100.81, 98.95,
+      99.45, 103.1, 104.83, 102.77, 102.2, 99.82, 99.01, 100.54, 101.31, 102.06,
+      99.88, 102.37, 99.41, 102.65, 105.86, 101.98, 105.92, 109, 107.79, 108.7,
+      108.45, 109.75, 105.83, 106.61, 104.82, 103.98, 101.1, 99.63, 100.49, 99.82,
+      98.24, 101.73, 103.61, 101.7, 101.93, 98.55, 100.08, 96.85, 98.91, 97.69,
+      100.89, 97.66, 95.85, 95.34, 92.52, 90.89, 92.29, 89.24, 91.95, 91.2,
     ];
 
     const result = calculateStochRSI(klines(closes), 14, 14, 14, 3);
@@ -31,14 +34,12 @@ describe('StochRSI (14, 14, 3, 3)', () => {
   });
 
   it('should reject overbought: %K >= 80 even on bullish cross', () => {
-    // Price spikes hard, %K goes above 80
-    const closes = [
-      100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88, 87,
-      89, 91, 93, 95, 97, 99, 102, 106, 110, 115, 120, 126, 133, 141,
-    ];
+    // Long enough series with a strong sustained rally that pushes %K >= 80.
+    const closes: number[] = [];
+    for (let i = 0; i < 60; i++) closes.push(100 + i * 1.5); // steady strong uptrend
 
     const result = calculateStochRSI(klines(closes), 14, 14, 14, 3);
-    // %K should be >= 80 (overbought), so signal should be rejected
+    // %K should be saturated >= 80 (overbought), so signal should be rejected.
     if (result.k >= 80) {
       expect(result.overbought).toBe(true);
       expect(validateStochRSISignal(result)).toBe(false);

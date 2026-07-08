@@ -82,6 +82,29 @@ describe('filterTrending', () => {
     expect(result.passed).toBe(false);
     expect(result.reason).toContain('mcap');
   });
+
+  it('rejects when vsATH below configured minimum (too close to ATH)', () => {
+    const result = filterTrending(makeToken(), { ...defaultConfig, vs_ath_pct_min: 20 }, 5);
+    expect(result.passed).toBe(false);
+    expect(result.reason).toContain('vsATH');
+  });
+
+  it('rejects when vsATH above configured maximum (too far from ATH)', () => {
+    const result = filterTrending(makeToken(), { ...defaultConfig, vs_ath_pct_max: 50 }, 80);
+    expect(result.passed).toBe(false);
+    expect(result.reason).toContain('vsATH');
+  });
+
+  it('passes vsATH check when within range', () => {
+    const result = filterTrending(makeToken(), { ...defaultConfig, vs_ath_pct_min: 10, vs_ath_pct_max: 90 }, 40);
+    expect(result.passed).toBe(true);
+  });
+
+  it('skips vsATH check when value is not supplied', () => {
+    // No vsAthPct argument → filter must not reject even if thresholds are set
+    const result = filterTrending(makeToken(), { ...defaultConfig, vs_ath_pct_min: 90, vs_ath_pct_max: 5 });
+    expect(result.passed).toBe(true);
+  });
 });
 
 describe('checkTokenAge', () => {

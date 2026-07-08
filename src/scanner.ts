@@ -14,7 +14,7 @@ import { getDexScreenerMarketData, getTokenVolume24h } from './adapters/dexscree
 import { calculateSuperTrend, validateSuperTrendSignal } from './indicators/supertrend';
 import { calculateStochRSI, validateStochRSISignal } from './indicators/stochrsi';
 import { calculateAllEMAs, validateEMASignal } from './indicators/ema';
-import { checkTokenAge, buildAlertFromTrending, filterTrending, sumKlineVolume } from './filters';
+import { buildAlertFromTrending, filterTrending } from './filters';
 import { Alerter } from './alerter';
 
 // ─── Price change from klines ───────────────────────────────────────────────
@@ -54,36 +54,6 @@ function isOnCooldown(mint: string): boolean {
 
 function setCooldown(mint: string, minutes: number): void {
   cooldownMap.set(mint.toLowerCase(), Date.now() + minutes * 60 * 1000);
-}
-
-// ─── Token enrichment (concurrent-safe) ─────────────────────────────────────
-
-interface EnrichedToken {
-  trending: GmgnTrending;
-  info: GmgnTokenInfo | null;
-  security: GmgnTokenSecurity | null;
-  klines: GmgnKline[];
-  priceChange5m: number;
-  priceChange1h: number;
-  vsAthPct: number;
-}
-
-async function enrichToken(trending: GmgnTrending): Promise<EnrichedToken> {
-  const [info, security, klines] = await Promise.all([
-    getTokenInfo(trending.address),
-    getTokenSecurity(trending.address),
-    getMarketKline(trending.address, '5m', 200),
-  ]);
-
-  const priceChange5m = calcPriceChange(klines, 5);
-  const priceChange1h = calcPriceChange(klines, 60);
-
-  let vsAthPct = 0;
-  if (info?.ath_price && info?.price?.price) {
-    vsAthPct = (1 - info.price.price / info.ath_price) * 100;
-  }
-
-  return { trending, info, security, klines, priceChange5m, priceChange1h, vsAthPct };
 }
 
 // ─── Check indicators on enriched token (multi-timeframe) ────────────────────
@@ -191,10 +161,28 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         continue;
       }
 
-      // Fee check dulu sebelum enrichment
+      // GMGN circuit breaker check — smart money path butuh GMGN end-to-end
+      const gmgnCircuit = isGmgnCircuitOpen();
+      if (gmgnCircuit.open) {
+        console.log(`[SCAN] ${mint.slice(0, 8)} GMGN circuit open, skip signal`);
+        stats.circuitSkipped = (stats.circuitSkipped ?? 0) + 1;
+        continue;
+      }
+
+      // Enrich: info + security + klines SEKALI. Setelah ini info bisa di-reuse
+      // untuk fee check (bug A4: sebelumnya getTokenFeesSol re-fetch data sama).
+      const [info, security, klines] = await Promise.all([
+        getTokenInfo(mint),
+        getTokenSecurity(mint),
+        getMarketKline(mint, '5m', 200),
+      ]);
+
+      if (klines.length < 15) continue;
+
+      // Fee check — reuse objek info yang baru di-fetch, hindari double call
       let tokenFeeSol: number | undefined;
       if (cfg.filters.min_fee_sol > 0) {
-        const feeResult = await getTokenFeesSol(mint);
+        const feeResult = await getTokenFeesSol(mint, info);
         if (feeResult.feeSol == null) {
           console.log(`[SCAN] ${mint.slice(0, 8)} fee unavailable (${feeResult.source}), skipping`);
           continue;
@@ -206,24 +194,12 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         tokenFeeSol = feeResult.feeSol;
       }
 
-      // GMGN circuit breaker check
-      const gmgnCircuit = isGmgnCircuitOpen();
-      if (gmgnCircuit.open) {
-        console.log(`[SCAN] ${mint.slice(0, 8)} GMGN circuit open, skip signal`);
-        stats.circuitSkipped = (stats.circuitSkipped ?? 0) + 1;
-        continue;
-      }
-
-      const [info, security, klines] = await Promise.all([
-        getTokenInfo(mint),
-        getTokenSecurity(mint),
-        getMarketKline(mint, '5m', 200),
-      ]);
-
-      if (klines.length < 15) continue;
-
       const priceChange5m = calcPriceChange(klines, 5);
       const priceChange1h = calcPriceChange(klines, 60);
+
+      const vsAthPct = info?.ath_price && info?.price?.price
+        ? (1 - info.price.price / info.ath_price) * 100
+        : 0;
 
       // DexScreener sumber UTAMA vol24h DAN liquidity
       const dexData = await getDexScreenerMarketData(mint);
@@ -267,16 +243,12 @@ async function processSignalStream(cfg: AppConfig, alerter: Alerter, stats: { si
         rug_ratio: security?.rug_ratio ?? 0,
       };
 
-      // Full filter check (vol24h, liquidity, holders, rug, social, honeypot, dll.)
-      const filterResult = filterTrending(syntheticTrending, cfg.filters);
+      // Full filter check (vol24h, liquidity, holders, rug, social, honeypot, vsATH, dll.)
+      const filterResult = filterTrending(syntheticTrending, cfg.filters, vsAthPct);
       if (!filterResult.passed) {
         console.log(`[SCAN] ${syntheticTrending.symbol} filtered: ${filterResult.reason}`);
         continue;
       }
-
-      const vsAthPct = info?.ath_price && info?.price?.price
-        ? (1 - info.price.price / info.ath_price) * 100
-        : 0;
 
       const check = await checkIndicatorsMultiTF(mint, {
         symbol: syntheticTrending.symbol,
@@ -328,7 +300,6 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
     stats.poolsChecked++;
 
     // DexScreener sumber UTAMA vol24h DAN liquidity — field Meteora terbukti salah label
-    // lihat: CHANCE vol $5356 vs real $1.8M, liq $17 vs real $225.5K
     const dexData = await getDexScreenerMarketData(pool.base.mint);
     let dataSource: DataSource = 'dexscreener';
     let vol24h: number;
@@ -353,33 +324,81 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
       continue;
     }
 
-    // Build synthetic GmgnTrending untuk filter + indicator check
+    // ── GMGN enrichment: security + info SEKALI (sebelum filter) ──
+    // Bug A3: sebelumnya data security di-fabrikasi (renounced_mint:true, top10:0),
+    // rug_check selalu lolos. Sekarang ambil data riil dari GMGN.
+
+    let info: GmgnTokenInfo | null = null;
+    let security: GmgnTokenSecurity | null = null;
+
+    const gmgnCircuit = isGmgnCircuitOpen();
+    if (gmgnCircuit.open) {
+      console.log(`[SCAN] ${symbol} GMGN circuit open, skip pool (no security data)`);
+      stats.circuitSkipped = (stats.circuitSkipped ?? 0) + 1;
+      continue;
+    }
+
+    try {
+      [info, security] = await Promise.all([
+        getTokenInfo(pool.base.mint),
+        getTokenSecurity(pool.base.mint),
+      ]);
+    } catch {
+      console.log(`[SCAN] ${symbol} GMGN enrich failed, skipping pool`);
+      continue;
+    }
+
+    // Build GmgnTrending dengan data RIIL dari GMGN, bukan fabricated defaults.
+    // Fields yang tidak tersedia dari GMGN diisi dari Meteora data.
     const trending: GmgnTrending = {
-      address: pool.base.mint, symbol, name: pool.name,
-      price: pool.price, price_change_5m: 0, price_change_1h: pool.price_change_pct, price_change_24h: 0,
-      market_cap: pool.mcap, liquidity: liqUsd, volume_24h: vol24h,
-      swaps: 0, holder_count: pool.holders,
-      top_10_holder_rate: 0, dev_team_hold_rate: 0,
-      suspected_insider_hold_rate: 0, rat_trader_amount_rate: 0, bundler_trader_amount_rate: 0,
-      smart_degen_count: 0, bot_degen_count: 0, renowned_count: 0, sniper_count: 0,
-      renounced_mint: true, renounced_freeze_account: true,
-      is_wash_trading: false, is_honeypot: false, has_at_least_one_social: false,
-      open_timestamp: 0, created_timestamp: 0, rug_ratio: 0,
+      address: pool.base.mint, symbol: info?.symbol ?? symbol, name: info?.name ?? pool.name,
+      price: info?.price?.price ?? pool.price,
+      price_change_5m: 0,
+      price_change_1h: pool.price_change_pct,
+      price_change_24h: 0,
+      market_cap: pool.mcap,
+      liquidity: liqUsd,
+      volume_24h: vol24h,
+      swaps: 0,
+      holder_count: info?.holder_count ?? pool.holders,
+      top_10_holder_rate: security?.top_10_holder_rate ?? 0,
+      dev_team_hold_rate: security?.dev_team_hold_rate ?? 0,
+      suspected_insider_hold_rate: security?.suspected_insider_hold_rate ?? 0,
+      rat_trader_amount_rate: security?.rat_trader_amount_rate ?? 0,
+      bundler_trader_amount_rate: security?.bundler_trader_amount_rate ?? 0,
+      smart_degen_count: 0,
+      bot_degen_count: info?.stat?.bot_degen_count ?? 0,
+      renowned_count: 0,
+      sniper_count: security?.sniper_count ?? 0,
+      renounced_mint: security?.renounced_mint ?? false,
+      renounced_freeze_account: security?.renounced_freeze_account ?? false,
+      is_wash_trading: security?.is_wash_trading ?? false,
+      is_honeypot: info?.is_honeypot ?? false,
+      has_at_least_one_social: info?.has_at_least_one_social ?? false,
+      open_timestamp: info?.open_timestamp ?? 0,
+      created_timestamp: info?.creation_timestamp ?? 0,
+      rug_ratio: security?.rug_ratio ?? 0,
     };
 
     seenMints.add(mintKey);
 
-    // Full filter check sebelum fee check & GMGN API call (volume already verified above, but keep filter for mcap/liq/etc.)
-    const filterResult = filterTrending(trending, cfg.filters);
+    // vsATH — dari data GMGN yang baru di-fetch
+    const vsAthPct = info?.ath_price && info?.price?.price
+      ? (1 - info.price.price / info.ath_price) * 100
+      : 0;
+
+    // Full filter check (vol24h, liquidity, holders, rug_check, vsATH, dll.)
+    // Sekarang rug_check pakai data RIIL dari GMGN security, bukan fabricated.
+    const filterResult = filterTrending(trending, cfg.filters, vsAthPct);
     if (!filterResult.passed) {
       console.log(`[SCAN] ${symbol} filtered: ${filterResult.reason}`);
       continue;
     }
 
-    // Fee check — skip kalo 403, proceed tanpa fee
+    // Fee check — reuse info yang sudah di-fetch (bug A4 fix)
     let tokenFeeSol: number | undefined;
     if (cfg.filters.min_fee_sol > 0) {
-      const feeResult = await getTokenFeesSol(pool.base.mint);
+      const feeResult = await getTokenFeesSol(pool.base.mint, info);
       if (feeResult.feeSol == null) {
         if (feeResult.source?.startsWith('http_')) {
           console.log(`[SCAN] ${symbol} fee ${feeResult.source}, proceed tanpa fee`);
@@ -395,36 +414,20 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
       }
     }
 
-    // GMGN circuit breaker check — skip indicator check if GMGN is down
-    const gmgnCircuit = isGmgnCircuitOpen();
-    if (gmgnCircuit.open) {
-      console.log(`[SCAN] ${symbol} GMGN circuit open, skip indicator check (Meteora-only mode)`);
-      stats.circuitSkipped = (stats.circuitSkipped ?? 0) + 1;
-      continue;
-    }
-
-    // Coba enrich GMGN — kalo gagal (403) proceed dengan Meteora data aja
-    let info: GmgnTokenInfo | null = null;
-    let security: GmgnTokenSecurity | null = null;
+    // Fetch klines untuk indicator check (separate dari info/security enrichment)
     let klines: GmgnKline[] = [];
     try {
-      const enriched = await enrichToken(trending);
-      info = enriched.info;
-      security = enriched.security;
-      klines = enriched.klines;
+      klines = await getMarketKline(pool.base.mint, '5m', 200);
     } catch {
-      console.log(`[SCAN] ${symbol} GMGN enrichment failed, proceed with Meteora data only`);
+      console.log(`[SCAN] ${symbol} failed to fetch klines, skipping`);
     }
 
-    // Indicator check (kalo klines tersedia)
     if (klines.length >= 15) {
       const priceChange5m = calcPriceChange(klines, 5);
       const priceChange1h = calcPriceChange(klines, 60);
-      const vsAthPct = info?.ath_price && info?.price?.price
-        ? (1 - info.price.price / info.ath_price) * 100 : 0;
 
       try {
-      const check = await checkIndicatorsMultiTF(pool.base.mint, {
+        const check = await checkIndicatorsMultiTF(pool.base.mint, {
           symbol, trending, info, security,
           priceChange5m, priceChange1h, vsAthPct,
         }, cfg, tokenFeeSol, dataSource, dataSource);
@@ -441,7 +444,6 @@ async function processMeteoraPools(cfg: AppConfig, alerter: Alerter, seenMints: 
       }
     }
 
-    // Fallback: alert tanpa indicator data
     console.log(`[SCAN] ${symbol} no klines, skipping`);
   }
 }

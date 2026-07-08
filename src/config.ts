@@ -22,8 +22,9 @@ function envBool(key: string, fallback = false): boolean {
 
 function envNum(key: string, fallback = 0): number {
   const val = process.env[key];
-  if (!val) return fallback;
-  return Number(val);
+  if (val === undefined || val === null || val.trim() === '') return fallback;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 // ─── Default filter config ──────────────────────────────────────────────────
